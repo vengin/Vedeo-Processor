@@ -1,6 +1,7 @@
 import tkinter as tk
 from tkinter import filedialog
 from tkinter import ttk
+from tkinter import scrolledtext
 import configparser
 import os
 import subprocess
@@ -8,9 +9,10 @@ import queue
 import time
 from tkinter import messagebox
 import logging
+from datetime import datetime
 
 # Configure logging
-logging.basicConfig(filename='tempo_processing.log', level=logging.DEBUG,
+logging.basicConfig(filename='tempo_log.txt', level=logging.DEBUG,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Default values for the application
@@ -60,6 +62,12 @@ class MP3Processor:
         self.progress_vars = []
         self.active_threads = 0
         self.total_files = 0
+        self.status_text = None
+        self.processed_files = 0
+        self.start_time = None
+        self.overwrite_all = False
+        self.processing_complete = False
+        self.processed_files_set = set()
 
         # Create GUI elements
         self.create_widgets()
@@ -69,6 +77,8 @@ class MP3Processor:
 
         # Bind the save_config method to the window close event.
         self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
+
+        self.setup_logging()
 
 
     # Load configuration from config.ini file
@@ -139,6 +149,13 @@ class MP3Processor:
             progress_bar.grid(row=7 + i, column=1)
             self.progress_bars.append(progress_bar)
 
+        # Add this block after the existing progress bars
+        ttk.Label(self.master, text="Processing Status:").grid(row=7 + DEFAULT_N_THREADS, column=0, sticky=tk.W)
+        self.status_text = tk.Text(self.master, wrap=tk.WORD, width=60, height=10)
+        self.status_text.grid(row=7 + DEFAULT_N_THREADS, column=1, columnspan=2, pady=10)
+        self.status_text.config(state=tk.DISABLED)  # Initially disable the widget
+
+
     # Opens a directory selection dialog for the source directory
     def browse_src_dir(self):
         directory = filedialog.askdirectory()
@@ -151,30 +168,19 @@ class MP3Processor:
 
     # Processes a single MP3 file, handling file overwriting
     def process_file(self, file_path, relative_path, progress_var):
+        if relative_path in self.processed_files_set:
+            return  # Skip if already processed
+
+        self.processed_files_set.add(relative_path)
         try:
             logging.debug(f"Starting processing: {file_path}")
-            print(f"Starting processing: {file_path}")
             dst_file_path = os.path.join(self.dst_dir.get(), relative_path)
-            # Create the directory if it doesn't exist
-            os.makedirs(os.path.dirname(dst_file_path), exist_ok=True)  #Added this line
+            os.makedirs(os.path.dirname(dst_file_path), exist_ok=True)
             logging.debug(f"Destination file path: {dst_file_path}")
-            i = 1
-            base, ext = os.path.splitext(dst_file_path)
-            while os.path.exists(dst_file_path):
-                if self.overwrite_all:
-                    break
-                overwrite = messagebox.askyesnocancel(
-                    "File Exists",
-                    f"The file '{os.path.basename(dst_file_path)}' already exists. Overwrite?",
-                    default=messagebox.CANCEL
-                )
-                if overwrite is None:
-                    return
-                elif overwrite:
-                    break
-                else:
-                    dst_file_path = f"{base}({i}){ext}"
-                    i += 1
+
+            if os.path.exists(dst_file_path) and not self.overwrite_all:
+                # Handle file overwriting logic here
+                pass
 
             sox_command = [
                 self.sox_path.get(),
@@ -200,60 +206,52 @@ class MP3Processor:
 
                 stdout, stderr = process.communicate()
                 end_time = time.time()
-                actual_size_to_time = (end_time - start_time) / file_size
                 logging.info(
-                    f"File {file_path} processed. Actual Size-to-Time: {actual_size_to_time:.6f}")
+                    f"File {file_path} processed.")
                 print(
-                    f"File {file_path} processed. Actual Size-to-Time: {actual_size_to_time:.6f}")
+                    f"File {file_path} processed.")
 
-                logging.debug(f"SoX stdout: {stdout.decode()}")
-                if stderr:
-                    logging.error(f"SoX stderr: {stderr.decode()}")
-
+                self.processed_files += 1
             except FileNotFoundError:
                 logging.error(f"SoX not found or invalid path: {self.sox_path.get()}")
                 print(f"SoX not found or invalid path: {self.sox_path.get()}")
+                self.update_status(f"Error: SoX not found for {relative_path}")
             except subprocess.CalledProcessError as e:
                 logging.error(
                     f"SoX error processing {file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
                 print(
                     f"SoX error processing {file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
+                self.update_status(f"Error processing: {relative_path}")
             except subprocess.TimeoutExpired:
                 logging.error(f"SoX process timed out for {file_path}")
                 print(f"SoX process timed out for {file_path}")
+                self.update_status(f"Error: Process timed out for {relative_path}")
             except Exception as e:
                 logging.exception(f"An unexpected error occurred processing {file_path}: {e}")
                 print(f"An unexpected error occurred processing {file_path}: {e}")
+                self.update_status(f"Error: Unexpected issue with {relative_path}")
 
         except FileNotFoundError:
             logging.error(f"Input file not found: {file_path}")
             print(f"Input file not found: {file_path}")
+            self.update_status(f"Error: File not found - {relative_path}")
         except Exception as e:
             logging.exception(f"An unexpected error occurred before SoX execution for {file_path}: {e}")
             print(f"An unexpected error occurred before SoX execution for {file_path}: {e}")
+            self.update_status(f"Error: Unexpected issue before processing {relative_path}")
         finally:
             progress_var.set(100)
             self.active_threads -= 1
+            if self.processed_files == self.total_files:
+                self.finish_processing()
 
 
     # Processes all MP3 files in the source directory using multiple threads
     def process_files(self):
-        self.save_config()
         src_dir = self.src_dir.get()
-        dst_dir = self.dst_dir.get()
-
-        if not src_dir or not dst_dir or not self.sox_path.get():
-            print("Error: Please specify all parameters.")
-            return
-
-        if not os.path.exists(dst_dir):
-            os.makedirs(dst_dir)
-
-        self.overwrite_all = False
-        self.run_button.config(state=tk.DISABLED)
-
-        self.total_files = sum(1 for root, _, files in os.walk(src_dir) for file in files if file.lower().endswith(".mp3"))
-        self.queue = queue.Queue(self.total_files)
+        self.total_files = 0
+        self.queue = queue.Queue()
+        self.processed_files_set.clear()
 
         for root, _, files in os.walk(src_dir):
             for file in files:
@@ -261,6 +259,8 @@ class MP3Processor:
                     full_path = os.path.join(root, file)
                     relative_path = os.path.relpath(full_path, src_dir)
                     self.queue.put((full_path, relative_path))
+                    self.update_status(f"Processing: {relative_path}")
+                    self.total_files += 1
 
         print(f"Number of files to process: {self.total_files}")
         self.start_threads()
@@ -274,14 +274,12 @@ class MP3Processor:
 
     def process_next_file(self, thread_index):
         if self.queue.empty():
-            if self.active_threads == 0:
-                print("Processing complete.")
-                self.run_button.config(state=tk.NORMAL)
+            if self.active_threads == 0 and not self.processing_complete:
+                self.finish_processing()
             return
 
         self.active_threads += 1
         file_path, relative_path = self.queue.get()
-        print(f"Processing: {file_path}")
         self.process_file(file_path, relative_path, self.progress_vars[thread_index])
         self.master.after(0, self.process_next_file, thread_index)
 
@@ -297,9 +295,51 @@ class MP3Processor:
         for progress_var in self.progress_vars:
             progress_var.set(0)
         self.active_threads = 0
+        self.processed_files = 0
+        self.start_time = time.time()
+        self.processing_complete = False
+        self.processed_files_set.clear()
+        self.status_text.config(state=tk.NORMAL)
+        self.status_text.delete(1.0, tk.END)
+        self.status_text.config(state=tk.DISABLED)
+        self.update_status("Starting processing...")
+
+        # Log the start of processing
+        logging.info("Starting processing...")
+
         self.process_files()
 
 
-root = tk.Tk()
-mp3_processor = MP3Processor(root)
-root.mainloop()
+    def update_status(self, message):
+        self.status_text.config(state=tk.NORMAL)  # Enable editing
+        self.status_text.insert(tk.END, message + "\n")
+        self.status_text.see(tk.END)
+        self.status_text.config(state=tk.DISABLED)  # Disable editing
+        self.master.update_idletasks()
+
+
+    def finish_processing(self):
+        if not self.processing_complete:
+            self.processing_complete = True
+            end_time = time.time()
+            processing_time = end_time - self.start_time
+            self.update_status(f"{self.processed_files} files processed in {processing_time:.2f} seconds")
+            self.run_button.config(state=tk.NORMAL)
+
+
+    def setup_logging(self):
+        log_file = 'tempo_log.txt'
+        logging.basicConfig(filename=log_file, level=logging.DEBUG,
+                            format='%(asctime)s - %(levelname)s - %(message)s')
+
+        # Add separator and timestamp to the log file
+        with open(log_file, 'a') as f:
+            timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            separator = f"\n\n==================== START OF LOG - {timestamp} ====================\n"
+            f.write(separator)
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = MP3Processor(root)
+    root.mainloop()
