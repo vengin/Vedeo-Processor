@@ -58,6 +58,8 @@ class MP3Processor:
         print("n_threads: ", self.n_threads.get())
 
         self.progress_vars = []
+        self.active_threads = 0
+        self.total_files = 0
 
         # Create GUI elements
         self.create_widgets()
@@ -148,7 +150,7 @@ class MP3Processor:
         self.dst_dir.set(directory)
 
     # Processes a single MP3 file, handling file overwriting
-    def process_file(self, file_path, relative_path):
+    def process_file(self, file_path, relative_path, progress_var):
         try:
             logging.debug(f"Starting processing: {file_path}")
             print(f"Starting processing: {file_path}")
@@ -184,9 +186,19 @@ class MP3Processor:
 
             try:
                 file_size = os.path.getsize(file_path)
+                expected_duration = file_size * SIZE_TO_TIME_COEFFICIENT
                 start_time = time.time()
+
                 process = subprocess.Popen(sox_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                stdout, stderr = process.communicate(timeout=20)
+
+                while process.poll() is None:
+                    elapsed_time = time.time() - start_time
+                    progress = min(100, (elapsed_time / expected_duration) * 100)
+                    progress_var.set(progress)
+                    self.master.update_idletasks()
+                    time.sleep(0.1)
+
+                stdout, stderr = process.communicate()
                 end_time = time.time()
                 actual_size_to_time = (end_time - start_time) / file_size
                 logging.info(
@@ -219,6 +231,9 @@ class MP3Processor:
         except Exception as e:
             logging.exception(f"An unexpected error occurred before SoX execution for {file_path}: {e}")
             print(f"An unexpected error occurred before SoX execution for {file_path}: {e}")
+        finally:
+            progress_var.set(100)
+            self.active_threads -= 1
 
 
     # Processes all MP3 files in the source directory using multiple threads
@@ -237,26 +252,38 @@ class MP3Processor:
         self.overwrite_all = False
         self.run_button.config(state=tk.DISABLED)
 
-        for root, _, files in os.walk(src_dir):  # os.walk traverses subdirectories
+        self.total_files = sum(1 for root, _, files in os.walk(src_dir) for file in files if file.lower().endswith(".mp3"))
+        self.queue = queue.Queue(self.total_files)
+
+        for root, _, files in os.walk(src_dir):
             for file in files:
                 if file.lower().endswith(".mp3"):
                     full_path = os.path.join(root, file)
-                    relative_path = os.path.relpath(full_path, src_dir)  # Get relative path
-                    self.queue.put((full_path, relative_path))  # add file to the queue
+                    relative_path = os.path.relpath(full_path, src_dir)
+                    self.queue.put((full_path, relative_path))
 
-        print(f"Number of files to process: {self.queue.qsize()}")
-        self.process_next_file()
+        print(f"Number of files to process: {self.total_files}")
+        self.start_threads()
 
 
-    def process_next_file(self):
-        try:
-            file_path, relative_path = self.queue.get_nowait()
-            print(f"Processing: {file_path}")
-            self.process_file(file_path, relative_path)
-            self.master.after(0, self.process_next_file)  # Process next file in the queue
-        except queue.Empty:
-            print("Processing complete.")
-            self.run_button.config(state=tk.NORMAL)
+    def start_threads(self):
+        num_threads = min(self.n_threads.get(), self.total_files)
+        for i in range(num_threads):
+            self.master.after(0, self.process_next_file, i)
+
+
+    def process_next_file(self, thread_index):
+        if self.queue.empty():
+            if self.active_threads == 0:
+                print("Processing complete.")
+                self.run_button.config(state=tk.NORMAL)
+            return
+
+        self.active_threads += 1
+        file_path, relative_path = self.queue.get()
+        print(f"Processing: {file_path}")
+        self.process_file(file_path, relative_path, self.progress_vars[thread_index])
+        self.master.after(0, self.process_next_file, thread_index)
 
 
     def on_closing(self):
@@ -267,6 +294,9 @@ class MP3Processor:
     def start_processing(self):
         self.save_config()
         self.run_button.config(state=tk.DISABLED)
+        for progress_var in self.progress_vars:
+            progress_var.set(0)
+        self.active_threads = 0
         self.process_files()
 
 
