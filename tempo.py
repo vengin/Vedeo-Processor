@@ -70,6 +70,7 @@ class MP3Processor:
     self.overwrite_all = False
     self.processing_complete = False
     self.processed_files_set = set()
+    self.processing_complete_event = threading.Event() # Added event object
 
     # Create GUI elements
     self.create_widgets()
@@ -249,9 +250,11 @@ class MP3Processor:
       print(f"An unexpected error occurred before SoX execution for {file_path}: {e}")
       self.update_status(f"Error: Unexpected issue before processing {relative_path}")
     finally:
+      self.processed_files += 1
       self.active_threads -= 1
       if self.processed_files == self.total_files and self.active_threads == 0:
         self.master.after(100, self.finish_processing)
+
 
   #############################################################################
   def monitor_process(self, process, expected_duration, progress_var):
@@ -280,7 +283,7 @@ class MP3Processor:
           full_path = os.path.join(root, file)
           relative_path = os.path.relpath(full_path, src_dir)
           self.queue.put((full_path, relative_path))
-          self.update_status(f"Queued: {relative_path}")
+          self.update_status(f"Queuing: {relative_path}")
           self.total_files += 1
 
     print(f"Number of files to process: {self.total_files}")
@@ -299,18 +302,17 @@ class MP3Processor:
 
   #############################################################################
   def worker(self, thread_index):
-    while not self.queue.empty():
+    while True:
       try:
-        file_path, relative_path = self.queue.get(block=False)
+        file_path, relative_path = self.queue.get(timeout=1)
         self.process_file(file_path, relative_path, self.progress_vars[thread_index])
         self.queue.task_done()
-        self.processed_files += 1
       except queue.Empty:
         break
       except Exception as e:
         self.update_status(f"Error in thread {thread_index + 1}: {e}")
         logging.exception(f"Error in thread {thread_index + 1}")
-
+        break
     self.active_threads -= 1
     if self.active_threads == 0:
       self.master.after(100, self.finish_processing)
@@ -371,6 +373,7 @@ class MP3Processor:
         progress_var.set(100)
 
       self.master.update_idletasks()
+
 
   #############################################################################
   def setup_logging(self):
