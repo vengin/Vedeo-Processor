@@ -10,6 +10,7 @@ import time
 from tkinter import messagebox
 import logging
 from datetime import datetime
+import threading
 
 # Configure logging
 logging.basicConfig(filename='tempo_log.txt', level=logging.DEBUG,
@@ -74,7 +75,8 @@ class MP3Processor:
     self.create_widgets()
     # Initialize threading components
     self.queue = queue.Queue()
-    self.processing_complete = False
+    self.gui_queue = queue.Queue()  # Queue for GUI updates
+    self.threads = []
 
     # Bind the save_config method to the window close event.
     self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
@@ -120,6 +122,8 @@ class MP3Processor:
       messagebox.showerror("Error", f"Could not save config file: {e}")
 
 
+
+  #############################################################################
   # Create and arrange GUI elements
   def create_widgets(self):
     ttk.Label(self.master, text="Path To SoX:").grid(row=0, column=0, sticky=tk.W)
@@ -189,14 +193,13 @@ class MP3Processor:
       logging.debug(f"Destination file path: {dst_file_path}")
 
       if os.path.exists(dst_file_path) and not self.overwrite_all:
-        # Handle file overwriting logic here
         pass
 
       sox_command = [
-          self.sox_path.get(),
-          file_path,
-          dst_file_path,
-          "tempo", str(self.tempo.get())
+        self.sox_path.get(),
+        file_path,
+        dst_file_path,
+        "tempo", str(self.tempo.get())
       ]
       logging.debug(f"SoX command: {' '.join(sox_command)}")
 
@@ -204,38 +207,35 @@ class MP3Processor:
         file_size = os.path.getsize(file_path)
         expected_duration = file_size * SIZE_TO_TIME_COEFFICIENT
         start_time = time.time()
-
         process = subprocess.Popen(sox_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-        while process.poll() is None:
-          elapsed_time = time.time() - start_time
-          progress = min(100, (elapsed_time / expected_duration) * 100)
-          progress_var.set(progress)
-          self.master.update_idletasks()
-          time.sleep(0.1)
+        # Create a separate thread to monitor the process and update the progress bar
+        progress_thread = threading.Thread(target=self.monitor_process, args=(process, expected_duration, progress_var))
+        progress_thread.start()
 
-        stdout, stderr = process.communicate()
+        stdout, stderr = process.communicate(timeout=30)
         end_time = time.time()
-        logging.info(
-            f"File {file_path} processed.")
-        print(
-            f"File {file_path} processed.")
+        logging.info(f"File {file_path} processed.")
+        print(f"File {file_path} processed.")
+        progress_thread.join()  # Wait for the progress thread to finish.
+        progress_var.set(100)  # Ensure the progress bar reaches 100%
+        self.master.update_idletasks()
 
-        self.processed_files += 1
       except FileNotFoundError:
         logging.error(f"SoX not found or invalid path: {self.sox_path.get()}")
         print(f"SoX not found or invalid path: {self.sox_path.get()}")
         self.update_status(f"Error: SoX not found for {relative_path}")
       except subprocess.CalledProcessError as e:
         logging.error(
-            f"SoX error processing {file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
+          f"SoX error processing {file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
         print(
-            f"SoX error processing {file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
+          f"SoX error processing {file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
         self.update_status(f"Error processing: {relative_path}")
       except subprocess.TimeoutExpired:
         logging.error(f"SoX process timed out for {file_path}")
         print(f"SoX process timed out for {file_path}")
         self.update_status(f"Error: Process timed out for {relative_path}")
+        process.kill()
       except Exception as e:
         logging.exception(f"An unexpected error occurred processing {file_path}: {e}")
         print(f"An unexpected error occurred processing {file_path}: {e}")
@@ -249,10 +249,21 @@ class MP3Processor:
       print(f"An unexpected error occurred before SoX execution for {file_path}: {e}")
       self.update_status(f"Error: Unexpected issue before processing {relative_path}")
     finally:
-      progress_var.set(100)
       self.active_threads -= 1
-      if self.processed_files == self.total_files:
-        self.finish_processing()
+      if self.processed_files == self.total_files and self.active_threads == 0:
+        self.master.after(100, self.finish_processing)
+
+  #############################################################################
+  def monitor_process(self, process, expected_duration, progress_var):
+    start_time = time.time()
+    while process.poll() is None:
+      elapsed_time = time.time() - start_time
+      progress = min(100, (elapsed_time / expected_duration) * 100)
+      progress_var.set(progress)
+      self.master.update_idletasks()
+      time.sleep(0.1)
+    progress_var.set(100)  # Ensure the progress bar reaches 100%
+    self.master.update_idletasks()
 
 
   #############################################################################
@@ -269,7 +280,7 @@ class MP3Processor:
           full_path = os.path.join(root, file)
           relative_path = os.path.relpath(full_path, src_dir)
           self.queue.put((full_path, relative_path))
-          self.update_status(f"Queuing: {relative_path}")
+          self.update_status(f"Queued: {relative_path}")
           self.total_files += 1
 
     print(f"Number of files to process: {self.total_files}")
@@ -279,21 +290,31 @@ class MP3Processor:
   #############################################################################
   def start_threads(self):
     num_threads = min(self.n_threads.get(), self.total_files)
+    self.active_threads = num_threads
     for i in range(num_threads):
-      self.master.after(0, self.process_next_file, i)
+      thread = threading.Thread(target=self.worker, args=(i,))
+      self.threads.append(thread)
+      thread.start()
 
 
   #############################################################################
-  def process_next_file(self, thread_index):
-    if self.queue.empty():
-      if self.active_threads == 0 and not self.processing_complete:
-        self.finish_processing()
-      return
+  def worker(self, thread_index):
+    while not self.queue.empty():
+      try:
+        file_path, relative_path = self.queue.get(block=False)
+        self.process_file(file_path, relative_path, self.progress_vars[thread_index])
+        self.queue.task_done()
+        self.processed_files += 1
+      except queue.Empty:
+        break
+      except Exception as e:
+        self.update_status(f"Error in thread {thread_index + 1}: {e}")
+        logging.exception(f"Error in thread {thread_index + 1}")
 
-    self.active_threads += 1
-    file_path, relative_path = self.queue.get()
-    self.process_file(file_path, relative_path, self.progress_vars[thread_index])
-    self.master.after(0, self.process_next_file, thread_index)
+    self.active_threads -= 1
+    if self.active_threads == 0:
+      self.master.after(100, self.finish_processing)
+
 
   #############################################################################
   def on_closing(self):
@@ -309,6 +330,7 @@ class MP3Processor:
       progress_var.set(0)
     self.active_threads = 0
     self.processed_files = 0
+    self.total_files = 0
     self.start_time = time.time()
     self.processing_complete = False
     self.processed_files_set.clear()
@@ -341,6 +363,14 @@ class MP3Processor:
       self.update_status(f"{self.processed_files} files processed in {processing_time:.2f} seconds")
       self.run_button.config(state=tk.NORMAL)
 
+      # Clear the threads list
+      self.threads.clear()
+
+      # Reset progress bars
+      for progress_var in self.progress_vars:
+        progress_var.set(100)
+
+      self.master.update_idletasks()
 
   #############################################################################
   def setup_logging(self):
