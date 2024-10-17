@@ -25,6 +25,42 @@ DEFAULT_CONFIG_FILE = "tempo_config.ini"
 
 
 #############################################################################
+class CustomProgressBar(tk.Canvas):
+  def __init__(self, master, *args, **kwargs):
+    super().__init__(master, *args, **kwargs)
+    self.progress_var = tk.DoubleVar()
+    self.filename_var = tk.StringVar()
+    self.progress_rect = None
+    self.text_id = None
+    self.outline_rect = None
+    self.draw_progress_bar()
+
+  def draw_progress_bar(self):
+    self.delete("all")
+    width = self.winfo_width()
+    height = self.winfo_height()
+    progress = self.progress_var.get()
+    fill_width = (width - 4) * (progress / 100)
+
+    # Draw the outline rectangle
+    self.outline_rect = self.create_rectangle(2, 2, width - 2, height - 2, outline="black")
+
+    # Draw the filled progress rectangle
+    self.progress_rect = self.create_rectangle(2, 2, fill_width + 2, height - 2, fill="#C0C0C0")
+
+    # Draw the filename text
+    self.text_id = self.create_text(width / 2, height / 2, text=self.filename_var.get(), fill="black")
+
+  def set_progress(self, value):
+    self.progress_var.set(value)
+    self.draw_progress_bar()
+
+  def set_filename(self, filename):
+    self.filename_var.set(filename)
+    self.draw_progress_bar()
+
+
+#############################################################################
 class MP3Processor:
   # Main class for the MP3 tempo changer application
   def __init__(self, master):
@@ -61,7 +97,7 @@ class MP3Processor:
 
     print("n_threads: ", self.n_threads.get())
 
-    self.progress_vars = []
+    self.progress_bars = []
     self.active_threads = 0
     self.total_files = 0
     self.status_text = None
@@ -92,11 +128,11 @@ class MP3Processor:
     if not config_file_read:
       print("Warning: Config file not found or corrupted. Using defaults.")
       self.config['DEFAULT'] = {
-          'sox_path': DEFAULT_SOX_PATH,
-          'tempo': str(DEFAULT_TEMPO),
-          'src_dir': '',
-          'dst_dir': '',
-          'n_threads': str(DEFAULT_N_THREADS)
+        'sox_path': DEFAULT_SOX_PATH,
+        'tempo': str(DEFAULT_TEMPO),
+        'src_dir': '',
+        'dst_dir': '',
+        'n_threads': str(DEFAULT_N_THREADS)
       }
     else:
       try:
@@ -105,7 +141,6 @@ class MP3Processor:
         messagebox.showwarning("Config Error",
                                "Tempo value missing or malformed in config file. Using default.")
         self.config['DEFAULT']['tempo'] = str(DEFAULT_TEMPO)
-
 
 
   #############################################################################
@@ -147,9 +182,7 @@ class MP3Processor:
 
     self.progress_bars = []
     for i in range(DEFAULT_N_THREADS):
-      progress_var = tk.DoubleVar()
-      self.progress_vars.append(progress_var)
-      progress_bar = ttk.Progressbar(self.master, variable=progress_var, maximum=100)
+      progress_bar = CustomProgressBar(self.master, width=300, height=20)
       progress_bar.grid(row=6 + i, column=1)
       self.progress_bars.append(progress_bar)
 
@@ -176,7 +209,7 @@ class MP3Processor:
 
   #############################################################################
   # Processes a single MP3 file, handling file overwriting
-  def process_file(self, file_path, relative_path, progress_var):
+  def process_file(self, file_path, relative_path, progress_bar):
     if relative_path in self.processed_files_set:
       return  # Skip if already processed
 
@@ -205,7 +238,7 @@ class MP3Processor:
         process = subprocess.Popen(sox_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
         # Create a separate thread to monitor the process and update the progress bar
-        progress_thread = threading.Thread(target=self.monitor_process, args=(process, expected_duration, progress_var))
+        progress_thread = threading.Thread(target=self.monitor_process, args=(process, expected_duration, progress_bar, relative_path))
         progress_thread.start()
 
         stdout, stderr = process.communicate(timeout=30)
@@ -213,7 +246,7 @@ class MP3Processor:
         logging.info(f"File {file_path} processed.")
         print(f"File {file_path} processed.")
         progress_thread.join()  # Wait for the progress thread to finish.
-        progress_var.set(100)  # Ensure the progress bar reaches 100%
+        progress_bar.set_progress(100)  # Ensure the progress bar reaches 100%
         self.master.update_idletasks()
 
       except FileNotFoundError:
@@ -249,19 +282,18 @@ class MP3Processor:
       if self.processed_files == self.total_files and self.active_threads == 0:
         self.master.after(100, self.finish_processing)
 
-
   #############################################################################
-  def monitor_process(self, process, expected_duration, progress_var):
+  def monitor_process(self, process, expected_duration, progress_bar, filename):
     start_time = time.time()
+    progress_bar.set_filename(filename)
     while process.poll() is None:
       elapsed_time = time.time() - start_time
       progress = min(100, (elapsed_time / expected_duration) * 100)
-      progress_var.set(progress)
+      progress_bar.set_progress(progress)
       self.master.update_idletasks()
       time.sleep(0.1)
-    progress_var.set(100)  # Ensure the progress bar reaches 100%
+    progress_bar.set_progress(100)  # Ensure the progress bar reaches 100%
     self.master.update_idletasks()
-
 
   #############################################################################
   # Processes all MP3 files in the source directory using multiple threads
@@ -277,7 +309,7 @@ class MP3Processor:
           full_path = os.path.join(root, file)
           relative_path = os.path.relpath(full_path, src_dir)
           self.queue.put((full_path, relative_path))
-          self.update_status(f"Queuing: {relative_path}")
+          self.update_status(f"Processing: {relative_path}")
           self.total_files += 1
 
     print(f"Number of files to process: {self.total_files}")
@@ -299,7 +331,7 @@ class MP3Processor:
     while True:
       try:
         file_path, relative_path = self.queue.get(timeout=1)
-        self.process_file(file_path, relative_path, self.progress_vars[thread_index])
+        self.process_file(file_path, relative_path, self.progress_bars[thread_index])
         self.queue.task_done()
       except queue.Empty:
         break
@@ -322,8 +354,8 @@ class MP3Processor:
   def start_processing(self):
     self.save_config()
     self.run_button.config(state=tk.DISABLED)
-    for progress_var in self.progress_vars:
-      progress_var.set(0)
+    for progress_bar in self.progress_bars:
+      progress_bar.set_progress(0)
     self.active_threads = 0
     self.processed_files = 0
     self.total_files = 0
@@ -363,8 +395,8 @@ class MP3Processor:
       self.threads.clear()
 
       # Reset progress bars
-      for progress_var in self.progress_vars:
-        progress_var.set(100)
+      for progress_bar in self.progress_bars:
+        progress_bar.set_progress(100)
 
       self.master.update_idletasks()
 
@@ -380,7 +412,6 @@ class MP3Processor:
       timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
       separator = f"\n\n==================== START OF LOG - {timestamp} ====================\n"
       f.write(separator)
-
 
 ###############################################################################
 if __name__ == "__main__":
