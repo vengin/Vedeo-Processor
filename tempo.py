@@ -73,6 +73,7 @@ class MP3Processor:
     self.src_dir_default = ""
     self.dst_dir_default = ""
     self.n_threads_default = DEFAULT_N_THREADS
+    self.overwrite_all_var = tk.BooleanVar()
 
     # Pre-define GUI element variables (to avoid linter warnings)
     self.run_button = None
@@ -87,6 +88,7 @@ class MP3Processor:
     self.src_dir = tk.StringVar()
     self.dst_dir = tk.StringVar()
     self.n_threads = tk.IntVar()
+#    self.overwrite_all_var = tk.BooleanVar() # Added overwrite variable
 
     # Set the values using the loaded configuration or defaults
     self.sox_path.set(self.config['DEFAULT'].get('sox_path', self.sox_path_default))
@@ -94,8 +96,8 @@ class MP3Processor:
     self.src_dir.set(self.config['DEFAULT'].get('src_dir', self.src_dir_default))
     self.dst_dir.set(self.config['DEFAULT'].get('dst_dir', self.dst_dir_default))
     self.n_threads.set(int(self.config['DEFAULT'].get('n_threads', str(self.n_threads_default))))
+#    self.overwrite_all_var.set(self.config['DEFAULT'].get('overwrite_all_var', self.overwrite_all_var))
 
-    print("n_threads: ", self.n_threads.get())
 
     self.progress_bars = []
     self.active_threads = 0
@@ -106,7 +108,7 @@ class MP3Processor:
     self.overwrite_all = False
     self.processing_complete = False
     self.processed_files_set = set()
-    self.processing_complete_event = threading.Event() # Added event object
+    self.processing_complete_event = threading.Event()
 
     # Create GUI elements
     self.create_widgets()
@@ -132,14 +134,19 @@ class MP3Processor:
         'tempo': str(DEFAULT_TEMPO),
         'src_dir': '',
         'dst_dir': '',
-        'n_threads': str(DEFAULT_N_THREADS)
+        'n_threads': str(DEFAULT_N_THREADS),
+        'overwrite_all': 'false' # Added default for overwrite
       }
     else:
       try:
         self.config['DEFAULT']['tempo'] = self.config['DEFAULT']['tempo'].split(';')[0].strip()
+        #Load overwrite setting
+        overwrite_setting = self.config['DEFAULT'].get('overwrite_all', 'false').lower()
+        self.overwrite_all_var.set(overwrite_setting == 'true')
+
       except (KeyError, IndexError):
         messagebox.showwarning("Config Error",
-                               "Tempo value missing or malformed in config file. Using default.")
+                     "Tempo value missing or malformed in config file. Using default.")
         self.config['DEFAULT']['tempo'] = str(DEFAULT_TEMPO)
 
 
@@ -151,6 +158,7 @@ class MP3Processor:
     self.config['DEFAULT']['src_dir'] = self.src_dir.get()
     self.config['DEFAULT']['dst_dir'] = self.dst_dir.get()
     self.config['DEFAULT']['n_threads'] = str(self.n_threads.get())
+    self.config['DEFAULT']['overwrite_all'] = str(self.overwrite_all_var.get()).lower() # Store overwrite setting
     try:
       with open(DEFAULT_CONFIG_FILE, 'w') as configfile:
         self.config.write(configfile)
@@ -165,6 +173,7 @@ class MP3Processor:
     ttk.Entry(self.master, textvariable=self.tempo, width=5).grid(row=0, column=1)
 
     ttk.Label(self.master, text="Source Directory Path:").grid(row=1, column=0, sticky=tk.W)
+    ttk.Entry(self.master, textvariable=self.src_dir, width=50).grid(row=1, column=1)
     ttk.Button(self.master, text="SrcDir", command=self.browse_src_dir).grid(row=1, column=2)
 
     ttk.Label(self.master, text="Destination Directory Path:").grid(row=2, column=0, sticky=tk.W)
@@ -177,19 +186,22 @@ class MP3Processor:
     ttk.Label(self.master, text="Size-to-Time Coefficient:").grid(row=4, column=0, sticky=tk.W)
     ttk.Label(self.master, text=f"{SIZE_TO_TIME_COEFFICIENT:.6f}").grid(row=4, column=1)
 
+    #Overwrite Checkbox
+    ttk.Checkbutton(self.master, text="Overwrite all", variable=self.overwrite_all_var).grid(row=5, column=0, sticky=tk.W)
+
     self.run_button = ttk.Button(self.master, text="Run", command=self.start_processing, state=tk.NORMAL)
-    self.run_button.grid(row=5, column=1)
+    self.run_button.grid(row=6, column=1)
 
     self.progress_bars = []
     for i in range(DEFAULT_N_THREADS):
       progress_bar = CustomProgressBar(self.master, width=300, height=20)
-      progress_bar.grid(row=6 + i, column=1)
+      progress_bar.grid(row=7 + i, column=1)
       self.progress_bars.append(progress_bar)
 
     # Add this block after the existing progress bars
-    ttk.Label(self.master, text="Processing Status:").grid(row=6 + DEFAULT_N_THREADS, column=0, sticky=tk.W)
+    ttk.Label(self.master, text="Processing Status:").grid(row=7 + DEFAULT_N_THREADS, column=0, sticky=tk.W)
     self.status_text = tk.Text(self.master, wrap=tk.WORD, width=60, height=10)
-    self.status_text.grid(row=6 + DEFAULT_N_THREADS, column=1, columnspan=2, pady=10)
+    self.status_text.grid(row=7 + DEFAULT_N_THREADS, column=1, columnspan=2, pady=10)
     self.status_text.config(state=tk.DISABLED)  # Initially disable the widget
 
 
@@ -220,8 +232,16 @@ class MP3Processor:
       os.makedirs(os.path.dirname(dst_file_path), exist_ok=True)
       logging.debug(f"Destination file path: {dst_file_path}")
 
+      #Handle Overwrite logic
+      self.overwrite_all = self.overwrite_all_var.get()
       if os.path.exists(dst_file_path) and not self.overwrite_all:
-        pass
+        base, ext = os.path.splitext(relative_path)
+        i = 1
+        while os.path.exists(os.path.join(self.dst_dir.get(), f"{base}({i}){ext}")):
+          i += 1
+        dst_file_path = os.path.join(self.dst_dir.get(), f"{base}({i}){ext}")
+        logging.debug(f"Destination file path (after renaming): {dst_file_path}")
+
 
       sox_command = [
         self.sox_path.get(),
