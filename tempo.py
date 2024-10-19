@@ -208,15 +208,19 @@ class MP3Processor:
   #############################################################################
   # Opens a directory selection dialog for the source directory
   def browse_src_dir(self):
-    directory = filedialog.askdirectory()
-    self.src_dir.set(directory)
+    current_dir = self.src_dir.get()
+    directory = filedialog.askdirectory(initialdir=current_dir if current_dir else None)
+    if directory:  # Check if a directory was selected
+        self.src_dir.set(os.path.normpath(directory))
 
 
   #############################################################################
   # Opens a directory selection dialog for the destination directory
   def browse_dst_dir(self):
-    directory = filedialog.askdirectory()
-    self.dst_dir.set(directory)
+    current_dir = self.dst_dir.get()
+    directory = filedialog.askdirectory(initialdir=current_dir if current_dir else None)
+    if directory:  # Check if a directory was selected
+        self.dst_dir.set(os.path.normpath(directory))
 
 
   #############################################################################
@@ -301,6 +305,7 @@ class MP3Processor:
       self.active_threads -= 1
       if self.processed_files == self.total_files and self.active_threads == 0:
         self.master.after(100, self.finish_processing)
+
 
   #############################################################################
   def monitor_process(self, process, expected_duration, progress_bar, filename):
