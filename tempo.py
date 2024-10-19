@@ -265,7 +265,7 @@ class MP3Processor:
         progress_thread = threading.Thread(target=self.monitor_process, args=(process, expected_duration, progress_bar, relative_path))
         progress_thread.start()
 
-        stdout, stderr = process.communicate(timeout=30)
+        stdout, stderr = process.communicate()
         end_time = time.time()
         logging.info(f"File {file_path} processed.")
         print(f"File {file_path} processed.")
@@ -283,11 +283,6 @@ class MP3Processor:
         print(
           f"SoX error processing {file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
         self.update_status(f"Error processing: {relative_path}")
-      except subprocess.TimeoutExpired:
-        logging.error(f"SoX process timed out for {file_path}")
-        print(f"SoX process timed out for {file_path}")
-        self.update_status(f"Error: Process timed out for {relative_path}")
-        process.kill()
       except Exception as e:
         logging.exception(f"An unexpected error occurred processing {file_path}: {e}")
         print(f"An unexpected error occurred processing {file_path}: {e}")
@@ -319,6 +314,7 @@ class MP3Processor:
       time.sleep(0.1)
     progress_bar.set_progress(100)  # Ensure the progress bar reaches 100%
     self.master.update_idletasks()
+
 
   #############################################################################
   # Processes all MP3 files in the source directory using multiple threads
