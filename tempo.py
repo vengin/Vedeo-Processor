@@ -309,8 +309,7 @@ class MP3Processor:
       self.update_status(f"Error: Unexpected issue before processing {relative_path}")
     finally:
       self.processed_files += 1
-      self.active_threads -= 1
-      if self.processed_files == self.total_files and self.active_threads == 0:
+      if self.processed_files == self.total_files:
         self.master.after(100, self.finish_processing)
 
 
@@ -386,8 +385,8 @@ class MP3Processor:
   def start_processing(self):
     # Remove existing progress bars, before creating new ones
     for progress_bar in self.progress_bars:
-        progress_bar.grid_forget()
-        progress_bar.destroy()
+      progress_bar.grid_forget()
+      progress_bar.destroy()
     self.progress_bars.clear()
 
     # Create n_threads CustomProgressBar dynamically
@@ -456,6 +455,7 @@ class MP3Processor:
       timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
       separator = f"\n\n==================== START OF LOG - {timestamp} ====================\n"
       f.write(separator)
+
 
 ###############################################################################
 if __name__ == "__main__":
