@@ -17,10 +17,11 @@ logging.basicConfig(filename='tempo_log.txt', level=logging.DEBUG,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Default values for the application
-DEFAULT_SOX_PATH = "sox"  # Change this if your sox path is different.
+DEFAULT_FFMPEG_PATH = ""  # Change this if your ffmpeg path is different.
 DEFAULT_TEMPO = 1.8
 DEFAULT_N_THREADS = 4
-SIZE_TO_TIME_COEFFICIENT = 38.37 / 10249195  # seconds per byte
+# SIZE_TO_TIME_COEFFICIENT = 38.37 / 10249195  # seconds per byte
+SIZE_TO_TIME_COEFFICIENT = 2.7E-07  # seconds per byte
 DEFAULT_CONFIG_FILE = "tempo_config.ini"
 
 
@@ -68,7 +69,7 @@ class MP3Processor:
     master.title("MP3 Tempo Changer")
 
     # Default values (used only if config file loading fails)
-    self.sox_path_default = DEFAULT_SOX_PATH
+    self.ffmpeg_path_default = DEFAULT_FFMPEG_PATH
     self.tempo_default = DEFAULT_TEMPO
     self.src_dir_default = ""
     self.dst_dir_default = ""
@@ -83,7 +84,7 @@ class MP3Processor:
     self.load_config()
 
     # Initialize GUI variables as empty
-    self.sox_path = tk.StringVar()
+    self.ffmpeg_path = tk.StringVar()
     self.tempo = tk.DoubleVar()
     self.src_dir = tk.StringVar()
     self.dst_dir = tk.StringVar()
@@ -91,13 +92,12 @@ class MP3Processor:
 #    self.overwrite_all_var = tk.BooleanVar() # Added overwrite variable
 
     # Set the values using the loaded configuration or defaults
-    self.sox_path.set(self.config['DEFAULT'].get('sox_path', self.sox_path_default))
+    self.ffmpeg_path.set(self.config['DEFAULT'].get('ffmpeg_path', self.ffmpeg_path_default))
     self.tempo.set(float(self.config['DEFAULT'].get('tempo', str(self.tempo_default))))
     self.src_dir.set(self.config['DEFAULT'].get('src_dir', self.src_dir_default))
     self.dst_dir.set(self.config['DEFAULT'].get('dst_dir', self.dst_dir_default))
     self.n_threads.set(int(self.config['DEFAULT'].get('n_threads', str(self.n_threads_default))))
 #    self.overwrite_all_var.set(self.config['DEFAULT'].get('overwrite_all_var', self.overwrite_all_var))
-
 
     self.progress_bars = []
     self.active_threads = 0
@@ -130,7 +130,7 @@ class MP3Processor:
     if not config_file_read:
       print("Warning: Config file not found or corrupted. Using defaults.")
       self.config['DEFAULT'] = {
-        'sox_path': DEFAULT_SOX_PATH,
+        'ffmpeg_path': DEFAULT_FFMPEG_PATH,
         'tempo': str(DEFAULT_TEMPO),
         'src_dir': '',
         'dst_dir': '',
@@ -153,7 +153,7 @@ class MP3Processor:
   #############################################################################
   # Save application configuration to config.ini file
   def save_config(self):
-    self.config['DEFAULT']['sox_path'] = self.sox_path.get()
+    self.config['DEFAULT']['ffmpeg_path'] = self.ffmpeg_path.get()
     self.config['DEFAULT']['tempo'] = str(self.tempo.get())
     self.config['DEFAULT']['src_dir'] = self.src_dir.get()
     self.config['DEFAULT']['dst_dir'] = self.dst_dir.get()
@@ -225,13 +225,16 @@ class MP3Processor:
 
   #############################################################################
   # Processes a single MP3 file, handling file overwriting
-  def process_file(self, file_path, relative_path, progress_bar):
+  def process_file(self, src_file_path, relative_path, progress_bar):
     if relative_path in self.processed_files_set:
       return  # Skip if already processed
 
     self.processed_files_set.add(relative_path)
     try:
-      logging.debug(f"Starting processing: {file_path}")
+      # Add this line to update the status when processing starts
+      self.update_status(f"Processing: {relative_path}")
+
+      logging.debug(f"Starting processing: {src_file_path}")
       dst_file_path = os.path.join(self.dst_dir.get(), relative_path)
       os.makedirs(os.path.dirname(dst_file_path), exist_ok=True)
       logging.debug(f"Destination file path: {dst_file_path}")
@@ -246,20 +249,27 @@ class MP3Processor:
         dst_file_path = os.path.join(self.dst_dir.get(), f"{base}({i}){ext}")
         logging.debug(f"Destination file path (after renaming): {dst_file_path}")
 
-
-      sox_command = [
-        self.sox_path.get(),
-        file_path,
+      # %ffmpeg% -i <ifile.mp3> -filter:a "atempo=1.8" -vn <ofile.mp3> -y -nostats
+      tempo = self.tempo.get()
+      ffmpeg_command = [
+        self.ffmpeg_path.get(),
+        "-i", src_file_path,
+        "-filter:a", f"atempo={self.tempo.get()}",  # audio filter
+        "-vn", # Disable video stream
         dst_file_path,
-        "tempo", str(self.tempo.get())
+        "-y", # Force overwrite output file
+        "-nostats",  # Suppress extra logging
       ]
-      logging.debug(f"SoX command: {' '.join(sox_command)}")
+
+      # Debug
+      logging.debug(f"FFMPEG command: {' '.join(ffmpeg_command)}")
 
       try:
-        file_size = os.path.getsize(file_path)
+        file_size = os.path.getsize(src_file_path)
         expected_duration = file_size * SIZE_TO_TIME_COEFFICIENT
         start_time = time.time()
-        process = subprocess.Popen(sox_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = subprocess.Popen(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        #print(subprocess.PIPE)
 
         # Create a separate thread to monitor the process and update the progress bar
         progress_thread = threading.Thread(target=self.monitor_process, args=(process, expected_duration, progress_bar, relative_path))
@@ -267,33 +277,33 @@ class MP3Processor:
 
         stdout, stderr = process.communicate()
         end_time = time.time()
-        logging.info(f"File {file_path} processed.")
-        print(f"File {file_path} processed.")
+        logging.info(f"File {src_file_path} processed.")
+        print(f"File {src_file_path} processed.")
         progress_thread.join()  # Wait for the progress thread to finish.
         progress_bar.set_progress(100)  # Ensure the progress bar reaches 100%
         self.master.update_idletasks()
 
       except FileNotFoundError:
-        logging.error(f"SoX not found or invalid path: {self.sox_path.get()}")
-        print(f"SoX not found or invalid path: {self.sox_path.get()}")
-        self.update_status(f"Error: SoX not found for {relative_path}")
+        logging.error(f"FFMPEG not found or invalid path: {self.ffmpeg_path.get()}")
+        print(f"FFMPEG not found or invalid path: {self.ffmpeg_path.get()}")
+        self.update_status(f"Error: FFMPEG not found for {relative_path}")
       except subprocess.CalledProcessError as e:
         logging.error(
-          f"SoX error processing {file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
+          f"Ffmpeg error processing {src_file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
         print(
-          f"SoX error processing {file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
+          f"Ffmpeg error processing {src_file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
         self.update_status(f"Error processing: {relative_path}")
       except Exception as e:
-        logging.exception(f"An unexpected error occurred processing {file_path}: {e}")
-        print(f"An unexpected error occurred processing {file_path}: {e}")
+        logging.exception(f"An unexpected error occurred processing {src_file_path}: {e}")
+        print(f"An unexpected error occurred processing {src_file_path}: {e}")
         self.update_status(f"Error: Unexpected issue with {relative_path}")
     except FileNotFoundError:
-      logging.error(f"Input file not found: {file_path}")
-      print(f"Input file not found: {file_path}")
+      logging.error(f"Input file not found: {src_file_path}")
+      print(f"Input file not found: {src_file_path}")
       self.update_status(f"Error: File not found - {relative_path}")
     except Exception as e:
-      logging.exception(f"An unexpected error occurred before SoX execution for {file_path}: {e}")
-      print(f"An unexpected error occurred before SoX execution for {file_path}: {e}")
+      logging.exception(f"An unexpected error occurred before Ffmpeg execution for {src_file_path}: {e}")
+      print(f"An unexpected error occurred before Ffmpeg execution for {src_file_path}: {e}")
       self.update_status(f"Error: Unexpected issue before processing {relative_path}")
     finally:
       self.processed_files += 1
@@ -330,7 +340,6 @@ class MP3Processor:
           full_path = os.path.join(root, file)
           relative_path = os.path.relpath(full_path, src_dir)
           self.queue.put((full_path, relative_path))
-          self.update_status(f"Processing: {relative_path}")
           self.total_files += 1
 
     print(f"Number of files to process: {self.total_files}")
