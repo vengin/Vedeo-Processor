@@ -73,7 +73,7 @@ class MP3Processor:
     self.tempo_default = DEFAULT_TEMPO
     self.src_dir_default = ""
     self.dst_dir_default = ""
-    self.n_threads_default = DEFAULT_N_THREADS
+    self.n_threads_default = 4  # or whatever default you prefer
     self.overwrite_all_var = tk.BooleanVar()
 
     # Pre-define GUI element variables (to avoid linter warnings)
@@ -88,7 +88,8 @@ class MP3Processor:
     self.tempo = tk.DoubleVar()
     self.src_dir = tk.StringVar()
     self.dst_dir = tk.StringVar()
-    self.n_threads = tk.IntVar()
+    config_n_threads = self.config.getint('DEFAULT', 'n_threads', fallback=self.n_threads_default)
+    self.n_threads = tk.IntVar(value=max(1, min(16, config_n_threads)))  # Ensures value is between 1 and 16
 #    self.overwrite_all_var = tk.BooleanVar() # Added overwrite variable
 
     # Set the values using the loaded configuration or defaults
@@ -153,11 +154,16 @@ class MP3Processor:
   #############################################################################
   # Save application configuration to config.ini file
   def save_config(self):
+    if self.validate_tempo():
+      self.config['DEFAULT']['tempo'] = str(self.tempo.get())
+    else:
+      self.config['DEFAULT']['tempo'] = str(self.tempo_default)
+
+    self.config['DEFAULT']['n_threads'] = str(self.n_threads.get())
+
     self.config['DEFAULT']['ffmpeg_path'] = self.ffmpeg_path.get()
-    self.config['DEFAULT']['tempo'] = str(self.tempo.get())
     self.config['DEFAULT']['src_dir'] = self.src_dir.get()
     self.config['DEFAULT']['dst_dir'] = self.dst_dir.get()
-    self.config['DEFAULT']['n_threads'] = str(self.n_threads.get())
     self.config['DEFAULT']['overwrite_all'] = str(self.overwrite_all_var.get()).lower() # Store overwrite setting
     try:
       with open(DEFAULT_CONFIG_FILE, 'w') as configfile:
@@ -170,42 +176,40 @@ class MP3Processor:
   # Create and arrange GUI elements
   def create_widgets(self):
     ttk.Label(self.master, text="Tempo:").grid(row=0, column=0, sticky=tk.W, padx=5)
-    ttk.Entry(self.master, textvariable=self.tempo, width=5).grid(row=0, column=1, sticky=tk.W)
+    tempo_entry = ttk.Entry(self.master, textvariable=self.tempo, width=5)
+    tempo_entry.grid(row=0, column=1, sticky=tk.W)
+    tempo_entry.bind('<FocusOut>', self.on_tempo_focusout)
 
     # Source Directory Path
     ttk.Button(self.master, text="SrcDir", command=self.browse_src_dir).grid(row=1, column=0)
-    ttk.Entry(self.master, textvariable=self.src_dir, width=199).grid(row=1, column=1, sticky=tk.W, padx=5)
+    ttk.Entry(self.master, textvariable=self.src_dir, width=199).grid(row=1, column=1, sticky=tk.W)
 
     # Destination Directory Path
     ttk.Button(self.master, text="DstDir", command=self.browse_dst_dir).grid(row=2, column=0)
-    ttk.Entry(self.master, textvariable=self.dst_dir, width=81).grid(row=2, column=1, sticky=tk.W)
+    ttk.Entry(self.master, textvariable=self.dst_dir, width=199).grid(row=2, column=1, sticky=tk.W)
 
-    ttk.Label(self.master, text="Num Threads:").grid(row=3, column=0, sticky=tk.W, padx=5)
-    ttk.Entry(self.master, textvariable=self.n_threads, width=5).grid(row=3, column=1, sticky=tk.W)
+    ttk.Label(self.master, text="Number of threads:").grid(row=3, column=0, sticky=tk.W, padx=5)
+    thread_values = list(range(1, 17))  # Creates a list from 1 to 16
+    self.n_threads_combo = ttk.Combobox(self.master, textvariable=self.n_threads, values=thread_values, width=3, state="readonly")
+    self.n_threads_combo.grid(row=3, column=1, sticky=tk.W)
+    self.n_threads_combo.bind('<<ComboboxSelected>>', self.on_n_threads_change)
 
     # Overwrite Checkbox
     ttk.Checkbutton(self.master, text="Overwrite all", variable=self.overwrite_all_var).grid(row=4, column=0, sticky=tk.W, padx=5)
 
     # Run button
-    # self.run_button = ttk.Button(self.master, text="Run", command=self.start_processing, state=tk.NORMAL, height=5)
-    # self.run_button.grid(row=5, column=1)
-    # Run button
-    self.run_button = tk.Button(self.master, text="Run", command=self.start_processing, state=tk.NORMAL, height=2, width=15)
+    self.run_button = tk.Button(self.master, text="Run", command=self.start_processing, state=tk.NORMAL, height=2, width=20)
     self.run_button.grid(row=5, column=1, pady=10)  # Added pady for vertical space
 
-    # Add this block after the existing progress bars
+    # Add this block before creating <n_threads> progress bars
     ttk.Label(self.master, text="Processing Status:").grid(row=6, column=0, sticky=tk.N, pady=5)
     self.status_text = tk.Text(self.master, wrap=tk.WORD, width=150, height=8)
     self.status_text.grid(row=6, column=1, padx=5, pady=5)
     self.status_text.config(state=tk.DISABLED)  # Initially disable the widget
 
-    # #
-    # self.progress_bars = []
-    # for i in range(self.n_threads.get()):
-    #   progress_bar = CustomProgressBar(self.master, width=483, height=20)
-    #   progress_bar.grid(row=7 + i, column=1)
-    #   self.progress_bars.append(progress_bar)
-
+  def on_n_threads_change(self, event):
+    # This method can be used if you need to perform any action when the selection changes
+    pass
 
   #############################################################################
   # Opens a directory selection dialog for the source directory
@@ -383,6 +387,9 @@ class MP3Processor:
 
   #############################################################################
   def start_processing(self):
+    if not self.validate_tempo():
+      return
+
     # Remove existing progress bars, before creating new ones
     for progress_bar in self.progress_bars:
       progress_bar.grid_forget()
@@ -431,7 +438,7 @@ class MP3Processor:
       self.processing_complete = True
       end_time = time.time()
       processing_time = end_time - self.start_time
-      self.update_status(f"{self.processed_files} files processed in {processing_time:.2f} seconds")
+      self.update_status(f"\n{self.processed_files} files processed in {processing_time:.2f} seconds")
       self.run_button.config(state=tk.NORMAL)
 
       # Clear the threads list
@@ -456,9 +463,28 @@ class MP3Processor:
       separator = f"\n\n==================== START OF LOG - {timestamp} ====================\n"
       f.write(separator)
 
+  #############################################################################
+  def validate_tempo(self):
+    try:
+      tempo = float(self.tempo.get())
+      if tempo <= 0 or tempo > 2:
+        messagebox.showerror("Invalid Tempo", "Tempo must be greater than 0 and less than 2.")
+        return False
+      return True
+    except ValueError:
+      messagebox.showerror("Invalid Tempo", "Please enter a valid number for tempo.")
+      return False
+
+
+  #############################################################################
+  def on_tempo_focusout(self, event):
+    if not self.validate_tempo():
+      self.tempo.set(self.tempo_default)  # Reset to default if invalid
+
 
 ###############################################################################
 if __name__ == "__main__":
   root = tk.Tk()
   app = MP3Processor(root)
   root.mainloop()
+
