@@ -169,40 +169,42 @@ class MP3Processor:
   #############################################################################
   # Create and arrange GUI elements
   def create_widgets(self):
-    ttk.Label(self.master, text="Tempo:").grid(row=0, column=0, sticky=tk.W)
-    ttk.Entry(self.master, textvariable=self.tempo, width=5).grid(row=0, column=1)
+    ttk.Label(self.master, text="Tempo:").grid(row=0, column=0, sticky=tk.W, padx=5)
+    ttk.Entry(self.master, textvariable=self.tempo, width=5).grid(row=0, column=1, sticky=tk.W)
 
-    ttk.Label(self.master, text="Source Directory Path:").grid(row=1, column=0, sticky=tk.W)
-    ttk.Entry(self.master, textvariable=self.src_dir, width=50).grid(row=1, column=1)
-    ttk.Button(self.master, text="SrcDir", command=self.browse_src_dir).grid(row=1, column=2)
+    # Source Directory Path
+    ttk.Button(self.master, text="SrcDir", command=self.browse_src_dir).grid(row=1, column=0)
+    ttk.Entry(self.master, textvariable=self.src_dir, width=199).grid(row=1, column=1, sticky=tk.W, padx=5)
 
-    ttk.Label(self.master, text="Destination Directory Path:").grid(row=2, column=0, sticky=tk.W)
-    ttk.Entry(self.master, textvariable=self.dst_dir, width=50).grid(row=2, column=1)
-    ttk.Button(self.master, text="DstDir", command=self.browse_dst_dir).grid(row=2, column=2)
+    # Destination Directory Path
+    ttk.Button(self.master, text="DstDir", command=self.browse_dst_dir).grid(row=2, column=0)
+    ttk.Entry(self.master, textvariable=self.dst_dir, width=81).grid(row=2, column=1, sticky=tk.W)
 
-    ttk.Label(self.master, text="Number of Threads:").grid(row=3, column=0, sticky=tk.W)
-    ttk.Entry(self.master, textvariable=self.n_threads, width=5).grid(row=3, column=1)
+    ttk.Label(self.master, text="Num Threads:").grid(row=3, column=0, sticky=tk.W, padx=5)
+    ttk.Entry(self.master, textvariable=self.n_threads, width=5).grid(row=3, column=1, sticky=tk.W)
 
-    ttk.Label(self.master, text="Size-to-Time Coefficient:").grid(row=4, column=0, sticky=tk.W)
-    ttk.Label(self.master, text=f"{SIZE_TO_TIME_COEFFICIENT:.6f}").grid(row=4, column=1)
+    # Overwrite Checkbox
+    ttk.Checkbutton(self.master, text="Overwrite all", variable=self.overwrite_all_var).grid(row=4, column=0, sticky=tk.W, padx=5)
 
-    #Overwrite Checkbox
-    ttk.Checkbutton(self.master, text="Overwrite all", variable=self.overwrite_all_var).grid(row=5, column=0, sticky=tk.W)
-
-    self.run_button = ttk.Button(self.master, text="Run", command=self.start_processing, state=tk.NORMAL)
-    self.run_button.grid(row=6, column=1)
-
-    self.progress_bars = []
-    for i in range(DEFAULT_N_THREADS):
-      progress_bar = CustomProgressBar(self.master, width=300, height=20)
-      progress_bar.grid(row=7 + i, column=1)
-      self.progress_bars.append(progress_bar)
+    # Run button
+    # self.run_button = ttk.Button(self.master, text="Run", command=self.start_processing, state=tk.NORMAL, height=5)
+    # self.run_button.grid(row=5, column=1)
+    # Run button
+    self.run_button = tk.Button(self.master, text="Run", command=self.start_processing, state=tk.NORMAL, height=2, width=15)
+    self.run_button.grid(row=5, column=1, pady=10)  # Added pady for vertical space
 
     # Add this block after the existing progress bars
-    ttk.Label(self.master, text="Processing Status:").grid(row=7 + DEFAULT_N_THREADS, column=0, sticky=tk.W)
-    self.status_text = tk.Text(self.master, wrap=tk.WORD, width=60, height=10)
-    self.status_text.grid(row=7 + DEFAULT_N_THREADS, column=1, columnspan=2, pady=10)
+    ttk.Label(self.master, text="Processing Status:").grid(row=6, column=0, sticky=tk.N, pady=5)
+    self.status_text = tk.Text(self.master, wrap=tk.WORD, width=150, height=8)
+    self.status_text.grid(row=6, column=1, padx=5, pady=5)
     self.status_text.config(state=tk.DISABLED)  # Initially disable the widget
+
+    # #
+    # self.progress_bars = []
+    # for i in range(self.n_threads.get()):
+    #   progress_bar = CustomProgressBar(self.master, width=483, height=20)
+    #   progress_bar.grid(row=7 + i, column=1)
+    #   self.progress_bars.append(progress_bar)
 
 
   #############################################################################
@@ -382,7 +384,19 @@ class MP3Processor:
 
   #############################################################################
   def start_processing(self):
-    self.save_config()
+    # Remove existing progress bars, before creating new ones
+    for progress_bar in self.progress_bars:
+        progress_bar.grid_forget()
+        progress_bar.destroy()
+    self.progress_bars.clear()
+
+    # Create n_threads CustomProgressBar dynamically
+    self.progress_bars = []
+    for i in range(self.n_threads.get()):
+      progress_bar = CustomProgressBar(self.master, width=1202, height=20)
+      progress_bar.grid(row=7 + i, column=1)
+      self.progress_bars.append(progress_bar)
+
     self.run_button.config(state=tk.DISABLED)
     for progress_bar in self.progress_bars:
       progress_bar.set_progress(0)
@@ -424,9 +438,9 @@ class MP3Processor:
       # Clear the threads list
       self.threads.clear()
 
-      # Reset progress bars
-      for progress_bar in self.progress_bars:
-        progress_bar.set_progress(100)
+      # # Set progress bars to 100%
+      # for progress_bar in self.progress_bars:
+      #   progress_bar.set_progress(100)
 
       self.master.update_idletasks()
 
