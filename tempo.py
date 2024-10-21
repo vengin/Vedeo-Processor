@@ -201,15 +201,27 @@ class MP3Processor:
     self.run_button = tk.Button(self.master, text="Run", command=self.start_processing, state=tk.NORMAL, height=2, width=20)
     self.run_button.grid(row=5, column=1, pady=10)  # Added pady for vertical space
 
-    # Add this block before creating <n_threads> progress bars
-    ttk.Label(self.master, text="Processing Status:").grid(row=6, column=0, sticky=tk.N, pady=5)
-    self.status_text = tk.Text(self.master, wrap=tk.WORD, width=150, height=8)
-    self.status_text.grid(row=6, column=1, padx=5, pady=5)
-    self.status_text.config(state=tk.DISABLED)  # Initially disable the widget
+    # Create a frame to hold the status_text and scrollbar
+    status_frame = ttk.Frame(self.master)
+    status_frame.grid(row=6, column=0, columnspan=2, sticky='nsew', padx=5, pady=5)
 
+    # Create the status_text widget
+    self.status_text = tk.Text(status_frame, height=10, width=80, wrap=tk.WORD, state=tk.DISABLED)
+    self.status_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+    # Create the scrollbar
+    scrollbar = ttk.Scrollbar(status_frame, orient=tk.VERTICAL, command=self.status_text.yview)
+    scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+    # Configure the status_text to use the scrollbar
+    self.status_text.config(yscrollcommand=scrollbar.set)
+
+
+  #############################################################################
   def on_n_threads_change(self, event):
     # This method can be used if you need to perform any action when the selection changes
     pass
+
 
   #############################################################################
   # Opens a directory selection dialog for the source directory
@@ -429,6 +441,7 @@ class MP3Processor:
     self.status_text.insert(tk.END, message + "\n")
     self.status_text.see(tk.END)
     self.status_text.config(state=tk.DISABLED)  # Disable editing
+    self.status_text.see(tk.END)  # Scroll to the bottom
     self.master.update_idletasks()
 
 
