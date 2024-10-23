@@ -127,7 +127,7 @@ class MP3Processor:
     # Bind the save_config method to the window close event.
     self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-    self.setup_logging('INFO')  # or 'DEBUG' for more detailed logging
+    self.setup_logging('DEBUG')  # or 'DEBUG' for more detailed logging
     logging.info("MP3Processor initialized")
 
 
@@ -268,6 +268,7 @@ class MP3Processor:
       dst_fname = dst_file_path.split("\\")[-1]
 
       os.makedirs(os.path.dirname(dst_file_path), exist_ok=True)
+      logging.debug(f"Destination file path: {dst_file_path}")
 
       #Handle Overwrite logic
       self.overwrite_all = self.overwrite_all_var.get()
@@ -303,7 +304,7 @@ class MP3Processor:
       self.use_compression = self.use_compression_var.get()
       if self.use_compression:
         ffmpeg_compression_params = [
-          "-codec:a", "libmp3lame", # LAME (Lame Ain’t an MP3 Encoder) MP3 encoder wrapper
+          "-codec:a", "libmp3lame", # LAME (Lame AinвЂ™t an MP3 Encoder) MP3 encoder wrapper
           "-q:a", "7", # quality setting for VBR
           "-ar", "22050" # sample rate
         ]
@@ -328,6 +329,7 @@ class MP3Processor:
         stdout, stderr = process.communicate()
         end_time = time.time()
         logging.info(f"File {src_file_path} processed.")
+        print(f"File {src_file_path} processed.")
         progress_thread.join()  # Wait for the progress thread to finish.
         progress_bar.set_progress(100)  # Ensure the progress bar reaches 100%
         self.master.update_idletasks()
@@ -336,31 +338,28 @@ class MP3Processor:
         logging.error(f"FFMPEG not found or invalid path: {self.ffmpeg_path.get()}")
         print(f"FFMPEG not found or invalid path: {self.ffmpeg_path.get()}")
         self.update_status(f"Error: FFMPEG not found for {relative_path}")
-        self.error_files += self.error_files
       except subprocess.CalledProcessError as e:
         logging.error(f"ffmpeg error processing {src_file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
         print(f"ffmpeg error processing {src_file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
         self.update_status(f"Error processing: {relative_path}")
-        self.error_files += self.error_files
       except Exception as e:
         logging.exception(f"An unexpected error occurred processing {src_file_path}: {e}")
         print(f"An unexpected error occurred processing {src_file_path}: {e}")
         self.update_status(f"Error: Unexpected issue with {relative_path}")
-        self.error_files += self.error_files
     except FileNotFoundError:
       logging.error(f"Input file not found: {src_file_path}")
       print(f"Input file not found: {src_file_path}")
       self.update_status(f"Error: File not found - {relative_path}")
-      self.error_files += self.error_files
     except Exception as e:
       logging.exception(f"An unexpected error occurred before ffmpeg execution for {src_file_path}: {e}")
       print(f"An unexpected error occurred before ffmpeg execution for {src_file_path}: {e}")
       self.update_status(f"Error: Unexpected issue before processing {relative_path}")
-      self.error_files += self.error_files
     finally:
       self.processed_files += 1
       if self.processed_files == self.total_files:
         self.master.after(100, self.finish_processing)
+      else:
+        self.error_files = self.total_files - self.processed_files
 
 
   #############################################################################
@@ -486,13 +485,9 @@ class MP3Processor:
       end_time = time.time()
       processing_time = end_time - self.start_time
       if self.error_files == 0:
-        msg = f"\n{self.processed_files} files processed in {processing_time:.2f} seconds"
-        self.update_status(msg)
-        logging.info(msg)
+        self.update_status(f"\n{self.processed_files} files processed in {processing_time:.2f} seconds")
       else:
-        msg = f"\nProcessed / Total (Erorrs): {self.processed_files} / {self.total_files} ({self.error_files}) files in {processing_time:.2f} seconds"
-        self.update_status(msg)
-        logging.info(msg)
+        self.update_status(f"\nProcessed / Total (Erorrs): {self.processed_files} / {self.total_files} ({self.error_files}) files in {processing_time:.2f} seconds")
       self.run_button.config(state=tk.NORMAL)
 
       # Clear the threads list
