@@ -21,7 +21,7 @@ DEFAULT_FFMPEG_PATH = ""  # Change this if your ffmpeg path is different.
 DEFAULT_TEMPO = 1.8
 DEFAULT_N_THREADS = 4
 # SIZE_TO_TIME_COEFFICIENT = 38.37 / 10249195  # seconds per byte
-SIZE_TO_TIME_COEFFICIENT = 2.7E-07  # seconds per byte
+SIZE_TO_TIME_COEFFICIENT = 4.0E-07  # seconds per byte
 DEFAULT_CONFIG_FILE = "tempo_config.ini"
 
 
@@ -47,7 +47,7 @@ class CustomProgressBar(tk.Canvas):
     self.outline_rect = self.create_rectangle(2, 2, width - 2, height - 2, outline="black")
 
     # Draw the filled progress rectangle
-    self.progress_rect = self.create_rectangle(2, 2, fill_width + 2, height - 2, fill="#C0C0C0")
+    self.progress_rect = self.create_rectangle(2, 2, fill_width + 2, height - 2, fill="#A8D8A8")
 
     # Draw the filename text
     self.text_id = self.create_text(width / 2, height / 2, text=self.filename_var.get(), fill="black")
@@ -75,6 +75,7 @@ class MP3Processor:
     self.dst_dir_default = ""
     self.n_threads_default = 4  # or whatever default you prefer
     self.overwrite_all_var = tk.BooleanVar()
+    self.use_compression_var = tk.BooleanVar()
 
     # Pre-define GUI element variables (to avoid linter warnings)
     self.run_button = None
@@ -107,6 +108,7 @@ class MP3Processor:
     self.processed_files = 0
     self.start_time = None
     self.overwrite_all = False
+    self.use_compression = False
     self.processing_complete = False
     self.processed_files_set = set()
     self.processing_complete_event = threading.Event()
@@ -136,14 +138,18 @@ class MP3Processor:
         'src_dir': '',
         'dst_dir': '',
         'n_threads': str(DEFAULT_N_THREADS),
-        'overwrite_all': 'false' # Added default for overwrite
+        'overwrite_all': 'false', # Default no overwrite
+        'use_compression': 'false', # Default no compression
       }
     else:
       try:
         self.config['DEFAULT']['tempo'] = self.config['DEFAULT']['tempo'].split(';')[0].strip()
-        #Load overwrite setting
+        # Load overwrite setting
         overwrite_setting = self.config['DEFAULT'].get('overwrite_all', 'false').lower()
         self.overwrite_all_var.set(overwrite_setting == 'true')
+        # Load compression setting
+        compression_setting = self.config['DEFAULT'].get('use_compression', 'false').lower()
+        self.use_compression_var.set(compression_setting == 'true')
 
       except (KeyError, IndexError):
         messagebox.showwarning("Config Error",
@@ -165,6 +171,7 @@ class MP3Processor:
     self.config['DEFAULT']['src_dir'] = self.src_dir.get()
     self.config['DEFAULT']['dst_dir'] = self.dst_dir.get()
     self.config['DEFAULT']['overwrite_all'] = str(self.overwrite_all_var.get()).lower() # Store overwrite setting
+    self.config['DEFAULT']['use_compression'] = str(self.use_compression_var.get()).lower() # Store compression setting
     try:
       with open(DEFAULT_CONFIG_FILE, 'w') as configfile:
         self.config.write(configfile)
@@ -182,11 +189,11 @@ class MP3Processor:
 
     # Source Directory Path
     ttk.Button(self.master, text="SrcDir", command=self.browse_src_dir).grid(row=1, column=0)
-    ttk.Entry(self.master, textvariable=self.src_dir, width=199).grid(row=1, column=1, sticky=tk.W)
+    ttk.Entry(self.master, textvariable=self.src_dir, width=200).grid(row=1, column=1, sticky=tk.W)
 
     # Destination Directory Path
     ttk.Button(self.master, text="DstDir", command=self.browse_dst_dir).grid(row=2, column=0)
-    ttk.Entry(self.master, textvariable=self.dst_dir, width=199).grid(row=2, column=1, sticky=tk.W)
+    ttk.Entry(self.master, textvariable=self.dst_dir, width=200).grid(row=2, column=1, sticky=tk.W)
 
     ttk.Label(self.master, text="Number of threads:").grid(row=3, column=0, sticky=tk.W, padx=5)
     thread_values = list(range(1, 17))  # Creates a list from 1 to 16
@@ -197,6 +204,9 @@ class MP3Processor:
     # Overwrite Checkbox
     ttk.Checkbutton(self.master, text="Overwrite all", variable=self.overwrite_all_var).grid(row=4, column=0, sticky=tk.W, padx=5)
 
+    # Compression Checkbox
+    ttk.Checkbutton(self.master, text="Use compression", variable=self.use_compression_var).grid(row=4, column=1, sticky=tk.W, padx=5)
+
     # Run button
     self.run_button = tk.Button(self.master, text="Run", command=self.start_processing, state=tk.NORMAL, height=2, width=20)
     self.run_button.grid(row=5, column=1, pady=10)  # Added pady for vertical space
@@ -206,7 +216,7 @@ class MP3Processor:
     status_frame.grid(row=6, column=0, columnspan=2, sticky='nsew', padx=5, pady=5)
 
     # Create the status_text widget
-    self.status_text = tk.Text(status_frame, height=10, width=80, wrap=tk.WORD, state=tk.DISABLED)
+    self.status_text = tk.Text(status_frame, height=10, width=165, wrap=tk.WORD, state=tk.DISABLED)
     self.status_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
     # Create the scrollbar
@@ -267,8 +277,7 @@ class MP3Processor:
         dst_file_path = os.path.join(self.dst_dir.get(), f"{base}({i}){ext}")
         logging.debug(f"Destination file path (after renaming): {dst_file_path}")
 
-      # %ffmpeg% -i <ifile.mp3> -filter:a "atempo=1.8" -vn <ofile.mp3> -y -nostats
-      tempo = self.tempo.get()
+      # %ffmpeg% -i <ifile.mp3> -filter:a atempo=1.8 -vn <ofile.mp3> -y -nostats
       ffmpeg_command = [
         self.ffmpeg_path.get(),
         "-i", src_file_path,
@@ -278,6 +287,18 @@ class MP3Processor:
         "-y", # Force overwrite output file
         "-nostats",  # Suppress extra logging
       ]
+
+      #
+      self.use_compression = self.use_compression_var.get()
+      if self.use_compression:
+        ffmpeg_compression_params = [
+          "-codec:a", "libmp3lame", # LAME (Lame Ain’t an MP3 Encoder) MP3 encoder wrapper
+          "-q:a", "7", # quality setting for VBR
+          "-ar", "22050" # sample rate
+        ]
+        # insert compression params:
+        # %ffmpeg% -i <ifile.mp3> -codec:a libmp3lame -q:a 7 -ar 22050 -filter:a atempo=1.8 -vn <ofile.mp3> -y -nostats
+        ffmpeg_command[3:3] = ffmpeg_compression_params
 
       # Debug
       logging.debug(f"FFMPEG command: {' '.join(ffmpeg_command)}")
@@ -306,10 +327,8 @@ class MP3Processor:
         print(f"FFMPEG not found or invalid path: {self.ffmpeg_path.get()}")
         self.update_status(f"Error: FFMPEG not found for {relative_path}")
       except subprocess.CalledProcessError as e:
-        logging.error(
-          f"Ffmpeg error processing {src_file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
-        print(
-          f"Ffmpeg error processing {src_file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
+        logging.error(f"ffmpeg error processing {src_file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
+        print(f"ffmpeg error processing {src_file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
         self.update_status(f"Error processing: {relative_path}")
       except Exception as e:
         logging.exception(f"An unexpected error occurred processing {src_file_path}: {e}")
@@ -320,8 +339,8 @@ class MP3Processor:
       print(f"Input file not found: {src_file_path}")
       self.update_status(f"Error: File not found - {relative_path}")
     except Exception as e:
-      logging.exception(f"An unexpected error occurred before Ffmpeg execution for {src_file_path}: {e}")
-      print(f"An unexpected error occurred before Ffmpeg execution for {src_file_path}: {e}")
+      logging.exception(f"An unexpected error occurred before ffmpeg execution for {src_file_path}: {e}")
+      print(f"An unexpected error occurred before ffmpeg execution for {src_file_path}: {e}")
       self.update_status(f"Error: Unexpected issue before processing {relative_path}")
     finally:
       self.processed_files += 1
