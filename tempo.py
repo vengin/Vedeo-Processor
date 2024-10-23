@@ -24,6 +24,10 @@ DEFAULT_CONFIG_FILE = "tempo_config.ini"
 
 #############################################################################
 class CustomProgressBar(tk.Canvas):
+  """
+  Custom progress bar class for displaying processing progress.
+  Inherits from tkinter Canvas widget.
+  """
   def __init__(self, master, *args, **kwargs):
     super().__init__(master, *args, **kwargs)
     self.progress_var = tk.DoubleVar()
@@ -36,6 +40,7 @@ class CustomProgressBar(tk.Canvas):
 
   #############################################################################
   def draw_progress_bar(self):
+    """Redraws the progress bar based on current progress and filename."""
     self.delete("all")
     width = self.winfo_width()
     height = self.winfo_height()
@@ -54,19 +59,24 @@ class CustomProgressBar(tk.Canvas):
 
   #############################################################################
   def set_progress(self, value):
+    """Sets the progress value and redraws the bar."""
     self.progress_var.set(value)
     self.draw_progress_bar()
 
 
   #############################################################################
   def set_filename(self, filename):
+    """Sets the filename to be displayed and redraws the bar."""
     self.filename_var.set(filename)
     self.draw_progress_bar()
 
 
 #############################################################################
 class MP3Processor:
-  # Main class for the MP3 tempo changer application
+  """
+  Main class for the MP3 tempo changer application.
+  Handles GUI interaction, configuration, and processing logic.
+  """
   def __init__(self, master):
     self.master = master
     master.title("MP3 Tempo Changer")
@@ -76,7 +86,7 @@ class MP3Processor:
     self.tempo_default = DEFAULT_TEMPO
     self.src_dir_default = ""
     self.dst_dir_default = ""
-    self.n_threads_default = 4  # or whatever default you prefer
+    self.n_threads_default = DEFAULT_N_THREADS
     self.overwrite_all_var = tk.BooleanVar()
     self.use_compression_var = tk.BooleanVar()
 
@@ -94,7 +104,6 @@ class MP3Processor:
     self.dst_dir = tk.StringVar()
     config_n_threads = self.config.getint('DEFAULT', 'n_threads', fallback=self.n_threads_default)
     self.n_threads = tk.IntVar(value=max(1, min(16, config_n_threads)))  # Ensures value is between 1 and 16
-#    self.overwrite_all_var = tk.BooleanVar() # Added overwrite variable
 
     # Set the values using the loaded configuration or defaults
     self.ffmpeg_path.set(self.config['DEFAULT'].get('ffmpeg_path', self.ffmpeg_path_default))
@@ -132,8 +141,8 @@ class MP3Processor:
 
 
   #############################################################################
-  # Load configuration from config.ini file
   def load_config(self):
+    """Loads application configuration from tempo_config.ini."""
     config_file_read = self.config.read(DEFAULT_CONFIG_FILE)
     if not config_file_read:
       print("Warning: Config file not found or corrupted. Using defaults.")
@@ -143,8 +152,8 @@ class MP3Processor:
         'src_dir': '',
         'dst_dir': '',
         'n_threads': str(DEFAULT_N_THREADS),
-        'overwrite_all': 'false', # Default no overwrite
-        'use_compression': 'false', # Default no compression
+        'overwrite_all': 'false',  # Default no overwrite
+        'use_compression': 'false',  # Default no compression
       }
     else:
       try:
@@ -163,8 +172,8 @@ class MP3Processor:
 
 
   #############################################################################
-  # Save application configuration to config.ini file
   def save_config(self):
+    """Saves application configuration to tempo_config.ini."""
     if self.validate_tempo():
       self.config['DEFAULT']['tempo'] = str(self.tempo.get())
     else:
@@ -175,8 +184,8 @@ class MP3Processor:
     self.config['DEFAULT']['ffmpeg_path'] = self.ffmpeg_path.get()
     self.config['DEFAULT']['src_dir'] = self.src_dir.get()
     self.config['DEFAULT']['dst_dir'] = self.dst_dir.get()
-    self.config['DEFAULT']['overwrite_all'] = str(self.overwrite_all_var.get()).lower() # Store overwrite setting
-    self.config['DEFAULT']['use_compression'] = str(self.use_compression_var.get()).lower() # Store compression setting
+    self.config['DEFAULT']['overwrite_all'] = str(self.overwrite_all_var.get()).lower()  # Store overwrite setting
+    self.config['DEFAULT']['use_compression'] = str(self.use_compression_var.get()).lower()  # Store compression setting
     try:
       with open(DEFAULT_CONFIG_FILE, 'w') as configfile:
         self.config.write(configfile)
@@ -185,8 +194,8 @@ class MP3Processor:
 
 
   #############################################################################
-  # Create and arrange GUI elements
   def create_widgets(self):
+    """Creates and arranges the GUI elements."""
     ttk.Label(self.master, text="Tempo:").grid(row=0, column=0, sticky=tk.W, padx=5)
     tempo_entry = ttk.Entry(self.master, textvariable=self.tempo, width=5)
     tempo_entry.grid(row=0, column=1, sticky=tk.W)
@@ -234,31 +243,32 @@ class MP3Processor:
 
   #############################################################################
   def on_n_threads_change(self, event):
-    # This method can be used if you need to perform any action when the selection changes
+    """Handles changes in the number of threads combobox (currently does nothing)."""
+	# This method can be used if you need to perform any action when the selection changes
     pass
 
 
   #############################################################################
-  # Opens a directory selection dialog for the source directory
   def browse_src_dir(self):
+    """Opens a directory selection dialog for the source directory."""
     current_dir = self.src_dir.get()
     directory = filedialog.askdirectory(initialdir=current_dir if current_dir else None)
     if directory:  # Check if a directory was selected
-        self.src_dir.set(os.path.normpath(directory))
+      self.src_dir.set(os.path.normpath(directory))
 
 
   #############################################################################
-  # Opens a directory selection dialog for the destination directory
   def browse_dst_dir(self):
+    """Opens a directory selection dialog for the destination directory."""
     current_dir = self.dst_dir.get()
     directory = filedialog.askdirectory(initialdir=current_dir if current_dir else None)
     if directory:  # Check if a directory was selected
-        self.dst_dir.set(os.path.normpath(directory))
+      self.dst_dir.set(os.path.normpath(directory))
 
 
   #############################################################################
-  # Processes a single MP3 file, handling file overwriting
   def process_file(self, src_file_path, relative_path, progress_bar):
+    """Processes a single MP3 file, handling potential overwrites."""
     if relative_path in self.processed_files_set:
       return  # Skip if already processed
 
@@ -269,13 +279,13 @@ class MP3Processor:
 
       os.makedirs(os.path.dirname(dst_file_path), exist_ok=True)
 
-      #Handle Overwrite logic
+      # Handle Overwrite logic
       self.overwrite_all = self.overwrite_all_var.get()
       if os.path.exists(dst_file_path):
-        if self.overwrite_all: # Ovewrite existin
+        if self.overwrite_all:  # Overwrite existing
           self.update_status(f"Overwriting: {dst_fname}")
           logging.debug(f"Overwriting: {dst_file_path}")
-        else: # Rename instead of ovewriting
+        else:  # Rename instead of overwriting
           base, ext = os.path.splitext(relative_path)
           i = 1
           while os.path.exists(os.path.join(self.dst_dir.get(), f"{base}({i}){ext}")):
@@ -284,7 +294,7 @@ class MP3Processor:
           dst_fname = dst_file_path.split("\\")[-1]
           self.update_status(f"Renaming: {dst_fname}")
           logging.debug(f"Renaming: {dst_file_path}")
-      else: # Normal output (no ovewrite)
+      else:  # Normal output (no overwrite)
         self.update_status(f"Processing: {dst_fname}")
         logging.debug(f"Processing: {dst_file_path}")
 
@@ -293,9 +303,9 @@ class MP3Processor:
         self.ffmpeg_path.get(),
         "-i", src_file_path,
         "-filter:a", f"atempo={self.tempo.get()}",  # audio filter
-        "-vn", # Disable video stream
+        "-vn",  # Disable video stream
         dst_file_path,
-        "-y", # Force overwrite output file
+        "-y",  # Force overwrite output file
         "-nostats",  # Suppress extra logging
       ]
 
@@ -303,9 +313,9 @@ class MP3Processor:
       self.use_compression = self.use_compression_var.get()
       if self.use_compression:
         ffmpeg_compression_params = [
-          "-codec:a", "libmp3lame", # LAME (Lame Ain’t an MP3 Encoder) MP3 encoder wrapper
-          "-q:a", "7", # quality setting for VBR
-          "-ar", "22050" # sample rate
+          "-codec:a", "libmp3lame",  # LAME (Lame Ain't an MP3 Encoder) MP3 encoder wrapper
+          "-q:a", "7",  # quality setting for VBR
+          "-ar", "22050"  # sample rate
         ]
         # insert compression params (after src_fname, before atempo filter arguments):
         # %ffmpeg% -i <ifile.mp3> -codec:a libmp3lame -q:a 7 -ar 22050 -filter:a atempo=1.8 -vn <ofile.mp3> -y -nostats
@@ -314,49 +324,38 @@ class MP3Processor:
       # Debug
       logging.debug(f"FFMPEG command: {' '.join(ffmpeg_command)}")
 
-      try:
-        file_size = os.path.getsize(src_file_path)
-        expected_duration = file_size * SIZE_TO_TIME_COEFFICIENT
-        start_time = time.time()
-        process = subprocess.Popen(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        #print(subprocess.PIPE)
+      file_size = os.path.getsize(src_file_path)
+      expected_duration = file_size * SIZE_TO_TIME_COEFFICIENT
+      start_time = time.time()
+      process = subprocess.Popen(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-        # Create a separate thread to monitor the process and update the progress bar
-        progress_thread = threading.Thread(target=self.monitor_process, args=(process, expected_duration, progress_bar, dst_fname))
-        progress_thread.start()
+      # Create a separate thread to monitor the process and update the progress bar
+      progress_thread = threading.Thread(target=self.monitor_process,
+                                        args=(process, expected_duration, progress_bar, dst_fname))
+      progress_thread.start()
 
-        stdout, stderr = process.communicate()
-        end_time = time.time()
-        logging.info(f"File {src_file_path} processed.")
-        progress_thread.join()  # Wait for the progress thread to finish.
-        progress_bar.set_progress(100)  # Ensure the progress bar reaches 100%
-        self.master.update_idletasks()
+      stdout, stderr = process.communicate()
+      end_time = time.time()
+      logging.info(f"File {src_file_path} processed.")
+      progress_thread.join()  # Wait for the progress thread to finish.
+      progress_bar.set_progress(100)  # Ensure the progress bar reaches 100%
+      self.master.update_idletasks()
 
-      except FileNotFoundError:
-        logging.error(f"FFMPEG not found or invalid path: {self.ffmpeg_path.get()}")
-        print(f"FFMPEG not found or invalid path: {self.ffmpeg_path.get()}")
-        self.update_status(f"Error: FFMPEG not found for {relative_path}")
-        self.error_files += self.error_files
-      except subprocess.CalledProcessError as e:
-        logging.error(f"ffmpeg error processing {src_file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
-        print(f"ffmpeg error processing {src_file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
-        self.update_status(f"Error processing: {relative_path}")
-        self.error_files += self.error_files
-      except Exception as e:
-        logging.exception(f"An unexpected error occurred processing {src_file_path}: {e}")
-        print(f"An unexpected error occurred processing {src_file_path}: {e}")
-        self.update_status(f"Error: Unexpected issue with {relative_path}")
-        self.error_files += self.error_files
     except FileNotFoundError:
-      logging.error(f"Input file not found: {src_file_path}")
-      print(f"Input file not found: {src_file_path}")
-      self.update_status(f"Error: File not found - {relative_path}")
-      self.error_files += self.error_files
+      logging.error(f"FFMPEG not found or invalid path: {self.ffmpeg_path.get()}")
+      print(f"FFMPEG not found or invalid path: {self.ffmpeg_path.get()}")
+      self.update_status(f"Error: FFMPEG not found for {relative_path}")
+      self.error_files += 1
+    except subprocess.CalledProcessError as e:
+      logging.error(f"ffmpeg error processing {src_file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
+      print(f"ffmpeg error processing {src_file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
+      self.update_status(f"Error processing: {relative_path}")
+      self.error_files += 1
     except Exception as e:
-      logging.exception(f"An unexpected error occurred before ffmpeg execution for {src_file_path}: {e}")
-      print(f"An unexpected error occurred before ffmpeg execution for {src_file_path}: {e}")
-      self.update_status(f"Error: Unexpected issue before processing {relative_path}")
-      self.error_files += self.error_files
+      logging.exception(f"An unexpected error occurred processing {src_file_path}: {e}")
+      print(f"An unexpected error occurred processing {src_file_path}: {e}")
+      self.update_status(f"Error: Unexpected issue with {relative_path}")
+      self.error_files += 1
     finally:
       self.processed_files += 1
       if self.processed_files == self.total_files:
@@ -365,6 +364,7 @@ class MP3Processor:
 
   #############################################################################
   def monitor_process(self, process, expected_duration, progress_bar, filename):
+    """Monitors the FFMPEG process and updates the progress bar."""
     start_time = time.time()
     progress_bar.set_filename(filename)
     while process.poll() is None:
@@ -378,8 +378,8 @@ class MP3Processor:
 
 
   #############################################################################
-  # Processes all MP3 files in the source directory using multiple threads
   def process_files(self):
+    """Processes all MP3 files in the source directory using multiple threads."""
     src_dir = self.src_dir.get()
     self.total_files = 0
     self.queue = queue.Queue()
@@ -399,6 +399,7 @@ class MP3Processor:
 
   #############################################################################
   def start_threads(self):
+    """Starts the worker threads to process the files."""
     num_threads = min(self.n_threads.get(), self.total_files)
     self.active_threads = num_threads
     for i in range(num_threads):
@@ -409,6 +410,7 @@ class MP3Processor:
 
   #############################################################################
   def worker(self, thread_index):
+    """Worker function for each thread, processing files from the queue."""
     while True:
       try:
         file_path, relative_path = self.queue.get(timeout=1)
@@ -427,12 +429,14 @@ class MP3Processor:
 
   #############################################################################
   def on_closing(self):
+    """Handles window closing event, saving configuration."""
     self.save_config()
     self.master.destroy()
 
 
   #############################################################################
   def start_processing(self):
+    """Starts the MP3 processing."""
     if not self.validate_tempo():
       return
 
@@ -471,6 +475,7 @@ class MP3Processor:
 
   #############################################################################
   def update_status(self, message):
+    """Updates the status text area."""
     self.status_text.config(state=tk.NORMAL)  # Enable editing
     self.status_text.insert(tk.END, message + "\n")
     self.status_text.see(tk.END)
@@ -481,6 +486,7 @@ class MP3Processor:
 
   #############################################################################
   def finish_processing(self):
+    """Handles the completion of processing."""
     if not self.processing_complete:
       self.processing_complete = True
       end_time = time.time()
@@ -498,15 +504,12 @@ class MP3Processor:
       # Clear the threads list
       self.threads.clear()
 
-      # # Set progress bars to 100%
-      # for progress_bar in self.progress_bars:
-      #   progress_bar.set_progress(100)
-
       self.master.update_idletasks()
 
 
   #############################################################################
   def setup_logging(self, log_level='INFO'):
+    """Sets up logging to a file."""
     log_file = 'tempo_log.txt'
 
     if log_level.upper() == 'DEBUG':
@@ -528,6 +531,7 @@ class MP3Processor:
 
   #############################################################################
   def validate_tempo(self):
+    """Validates the tempo value."""
     try:
       tempo = float(self.tempo.get())
       if tempo <= 0 or tempo > 2:
@@ -541,6 +545,7 @@ class MP3Processor:
 
   #############################################################################
   def on_tempo_focusout(self, event):
+    """Handles tempo entry focus out event, validating the input."""
     if not self.validate_tempo():
       self.tempo.set(self.tempo_default)  # Reset to default if invalid
 
