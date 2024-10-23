@@ -139,13 +139,17 @@ class MP3Processor:
     self.setup_logging('INFO')  # or 'DEBUG' for more detailed logging
     logging.info("MP3Processor initialized")
 
+    self.status_update_queue = queue.Queue()  # Queue for status updates
+    self.status_update_thread = threading.Thread(target=self.process_status_updates)
+    self.status_update_thread.start()  # Start the thread for processing status updates
+
 
   #############################################################################
   def load_config(self):
     """Loads application configuration from tempo_config.ini."""
     config_file_read = self.config.read(DEFAULT_CONFIG_FILE)
     if not config_file_read:
-      print("Warning: Config file not found or corrupted. Using defaults.")
+      logging.info("Warning: Config file not found or corrupted. Using defaults.")
       self.config['DEFAULT'] = {
         'ffmpeg_path': DEFAULT_FFMPEG_PATH,
         'tempo': str(DEFAULT_TEMPO),
@@ -283,7 +287,7 @@ class MP3Processor:
       self.overwrite_all = self.overwrite_all_var.get()
       if os.path.exists(dst_file_path):
         if self.overwrite_all:  # Overwrite existing
-          self.update_status(f"Overwriting: {dst_fname}")
+          self.status_update_queue.put(f"Overwriting: {dst_fname}")  # Use queue for status updates
           logging.debug(f"Overwriting: {dst_file_path}")
         else:  # Rename instead of overwriting
           base, ext = os.path.splitext(relative_path)
@@ -292,10 +296,10 @@ class MP3Processor:
             i += 1
           dst_file_path = os.path.join(self.dst_dir.get(), f"{base}({i}){ext}")
           dst_fname = dst_file_path.split("\\")[-1]
-          self.update_status(f"Renaming: {dst_fname}")
+          self.status_update_queue.put(f"Renaming: {dst_fname}")  # Use queue for status updates
           logging.debug(f"Renaming: {dst_file_path}")
       else:  # Normal output (no overwrite)
-        self.update_status(f"Processing: {dst_fname}")
+        self.status_update_queue.put(f"Processing: {dst_fname}")  # Use queue for status updates
         logging.debug(f"Processing: {dst_file_path}")
 
       # %ffmpeg% -i <ifile.mp3> -filter:a atempo=1.8 -vn <ofile.mp3> -y -nostats
@@ -309,7 +313,7 @@ class MP3Processor:
         "-nostats",  # Suppress extra logging
       ]
 
-      # Use compression?
+      # Use compression if enabled
       self.use_compression = self.use_compression_var.get()
       if self.use_compression:
         ffmpeg_compression_params = [
@@ -321,7 +325,7 @@ class MP3Processor:
         # %ffmpeg% -i <ifile.mp3> -codec:a libmp3lame -q:a 7 -ar 22050 -filter:a atempo=1.8 -vn <ofile.mp3> -y -nostats
         ffmpeg_command[3:3] = ffmpeg_compression_params
 
-      # Debug
+      # Debug log the command
       logging.debug(f"FFMPEG command: {' '.join(ffmpeg_command)}")
 
       file_size = os.path.getsize(src_file_path)
@@ -336,25 +340,22 @@ class MP3Processor:
 
       stdout, stderr = process.communicate()
       end_time = time.time()
-      logging.info(f"File {src_file_path} processed.")
+      logging.info(f"Processed file {src_file_path}")
       progress_thread.join()  # Wait for the progress thread to finish.
       progress_bar.set_progress(100)  # Ensure the progress bar reaches 100%
       self.master.update_idletasks()
 
     except FileNotFoundError:
       logging.error(f"FFMPEG not found or invalid path: {self.ffmpeg_path.get()}")
-      print(f"FFMPEG not found or invalid path: {self.ffmpeg_path.get()}")
-      self.update_status(f"Error: FFMPEG not found for {relative_path}")
+      self.status_update_queue.put(f"Error: FFMPEG not found for {relative_path}")  # Use queue for status updates
       self.error_files += 1
     except subprocess.CalledProcessError as e:
       logging.error(f"ffmpeg error processing {src_file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
-      print(f"ffmpeg error processing {src_file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
-      self.update_status(f"Error processing: {relative_path}")
+      self.status_update_queue.put(f"Error processing: {relative_path}")  # Use queue for status updates
       self.error_files += 1
     except Exception as e:
       logging.exception(f"An unexpected error occurred processing {src_file_path}: {e}")
-      print(f"An unexpected error occurred processing {src_file_path}: {e}")
-      self.update_status(f"Error: Unexpected issue with {relative_path}")
+      self.status_update_queue.put(f"Error: Unexpected issue with {relative_path}")  # Use queue for status updates
       self.error_files += 1
     finally:
       self.processed_files += 1
@@ -393,7 +394,6 @@ class MP3Processor:
           self.queue.put((full_path, relative_path))
           self.total_files += 1
 
-    print(f"Number of files to process: {self.total_files}")
     self.start_threads()
 
 
@@ -548,6 +548,18 @@ class MP3Processor:
     """Handles tempo entry focus out event, validating the input."""
     if not self.validate_tempo():
       self.tempo.set(self.tempo_default)  # Reset to default if invalid
+
+
+  #############################################################################
+  def process_status_updates(self):
+    """Processes status updates from the queue."""
+    while True:
+      try:
+        message = self.status_update_queue.get(timeout=1)  # Wait for a message
+        self.update_status(message)  # Update the status text
+        self.status_update_queue.task_done()  # Mark the task as done
+      except queue.Empty:
+        continue  # Continue if no messages are available
 
 
 ###############################################################################
