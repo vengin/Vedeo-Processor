@@ -138,9 +138,10 @@ class MP3Processor:
     self.setup_logging('INFO')  # 'INFO' or 'DEBUG' for more detailed logging
     logging.info("MP3Processor initialized")
 
-    self.status_update_queue = queue.Queue()  # Queue for status updates
-    self.status_update_thread = threading.Thread(target=self.process_status_updates)
-    self.status_update_thread.start()  # Start the thread for processing status updates
+    self.status_update_queue = queue.Queue()
+    self.status_update_thread = threading.Thread(target=self.process_status_updates, daemon=True) # Explicitly set daemon
+    self.status_update_thread.start()
+    logging.info("Status update thread started.")
 
 
   #############################################################################
@@ -169,7 +170,7 @@ class MP3Processor:
 
       except (KeyError, IndexError):
         messagebox.showwarning("Config Error",
-                     "Tempo value missing or malformed in config file. Using default.")
+          "Tempo value missing or malformed in config file. Using default.")
         self.config['DEFAULT']['tempo'] = str(DEFAULT_TEMPO)
 
 
@@ -251,7 +252,7 @@ class MP3Processor:
   #############################################################################
   def on_n_threads_change(self, event):
     """Handles changes in the number of threads combobox (currently does nothing)."""
-	# This method can be used if you need to perform any action when the selection changes
+    # This method can be used if you need to perform any action when the selection changes
     pass
 
 
@@ -342,7 +343,7 @@ class MP3Processor:
 
       # Create a separate thread to monitor the process and update the progress bar
       progress_thread = threading.Thread(target=self.monitor_process,
-                                        args=(process, expected_duration, progress_bar, dst_fname))
+                                         args=(process, expected_duration, progress_bar, dst_fname))
       progress_thread.start()
 
       stdout, stderr = process.communicate()
@@ -413,13 +414,12 @@ class MP3Processor:
       thread = threading.Thread(target=self.worker, args=(i,))
       self.threads.append(thread)
       thread.start()
-      logging.info(f"Started thread {thread.name}")
 
 
   #############################################################################
   def worker(self, thread_index):
     """Worker function for each thread, processing files from the queue."""
-    while not self.processing_complete_event.is_set():  # Check if the event is set
+    while True:
       try:
         file_path, relative_path = self.queue.get(timeout=1)
         self.process_file(file_path, relative_path, self.progress_bars[thread_index])
@@ -427,7 +427,7 @@ class MP3Processor:
       except queue.Empty:
         break
       except Exception as e:
-        self.update_status(f"Error in thread {thread_index + 1}: {e}")
+        self.status_update_queue.put(f"Error in thread {thread_index + 1}: {e}")
         logging.exception(f"Error in thread {thread_index + 1}")
         break
     self.active_threads -= 1
@@ -437,22 +437,20 @@ class MP3Processor:
 
   #############################################################################
   def on_closing(self):
-    """Handles window closing event, saving configuration and cleaning up resources."""
-    logging.info("Closing application...")
-
-    # Signal threads to stop
-    self.processing_complete_event.set()  # Set the event to signal threads to stop
-
-    # Wait for all threads to finish
-    for thread in self.threads:
-      if thread.is_alive():
-        logging.info(f"Waiting for thread {thread.name} to finish...")
-        thread.join()
-
-    # Save configuration
+    """Handles window closing event, saving configuration."""
+    logging.info("Closing application, waiting for threads...")
     self.save_config()
+
+    # Attempt to gracefully stop the status update thread
+    self.status_update_queue.put(None) #Signal to the thread to exit
+
+    try:
+      self.status_update_thread.join(timeout=2)
+    except Exception as e:
+      logging.error(f"Error joining status update thread: {e}")
+
+    logging.info("Threads finished (or timed out), closing window.")
     self.master.destroy()
-    logging.info("Application closed.")
 
 
   #############################################################################
@@ -576,11 +574,16 @@ class MP3Processor:
     """Processes status updates from the queue."""
     while True:
       try:
-        message = self.status_update_queue.get(timeout=1)  # Wait for a message
-        self.update_status(message)  # Update the status text
-        self.status_update_queue.task_done()  # Mark the task as done
+        message = self.status_update_queue.get(timeout=0.1)  # Short timeout to avoid blocking indefinitely
+        if message is None: # Check for exit signal
+          break
+        self.update_status(message)
+        self.status_update_queue.task_done()
       except queue.Empty:
-        continue  # Continue if no messages are available
+        continue
+      except Exception as e:
+        logging.exception("Error in status update thread: %s", e)
+        break
 
 
 ###############################################################################
