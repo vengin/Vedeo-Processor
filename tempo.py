@@ -87,7 +87,7 @@ class MP3Processor:
     self.src_dir_default = ""
     self.dst_dir_default = ""
     self.n_threads_default = DEFAULT_N_THREADS
-    self.overwrite_all_var = tk.BooleanVar()
+    self.overwrite_options = tk.StringVar()  # Initialize here
     self.use_compression_var = tk.BooleanVar()
 
     # Pre-define GUI element variables (to avoid linter warnings)
@@ -111,7 +111,7 @@ class MP3Processor:
     self.src_dir.set(self.config['DEFAULT'].get('src_dir', self.src_dir_default))
     self.dst_dir.set(self.config['DEFAULT'].get('dst_dir', self.dst_dir_default))
     self.n_threads.set(int(self.config['DEFAULT'].get('n_threads', str(self.n_threads_default))))
-#    self.overwrite_all_var.set(self.config['DEFAULT'].get('overwrite_all_var', self.overwrite_all_var))
+    self.overwrite_options.set(self.config['DEFAULT'].get('overwrite_option', "Skip existing files"))  # Load overwrite option
 
     self.progress_bars = []
     self.active_threads = 0
@@ -120,7 +120,6 @@ class MP3Processor:
     self.error_files = 0
     self.status_text = None
     self.start_time = None
-    self.overwrite_all = False
     self.use_compression = False
     self.processing_complete = False
     self.processed_files_set = set()
@@ -136,7 +135,7 @@ class MP3Processor:
     # Bind the save_config method to the window close event.
     self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-    self.setup_logging('INFO')  # or 'DEBUG' for more detailed logging
+    self.setup_logging('INFO')  # 'INFO' or 'DEBUG' for more detailed logging
     logging.info("MP3Processor initialized")
 
     self.status_update_queue = queue.Queue()  # Queue for status updates
@@ -156,15 +155,14 @@ class MP3Processor:
         'src_dir': '',
         'dst_dir': '',
         'n_threads': str(DEFAULT_N_THREADS),
-        'overwrite_all': 'false',  # Default no overwrite
+        'overwrite_option': 'Skip existing files',  # Default option
         'use_compression': 'false',  # Default no compression
       }
     else:
       try:
         self.config['DEFAULT']['tempo'] = self.config['DEFAULT']['tempo'].split(';')[0].strip()
         # Load overwrite setting
-        overwrite_setting = self.config['DEFAULT'].get('overwrite_all', 'false').lower()
-        self.overwrite_all_var.set(overwrite_setting == 'true')
+        self.overwrite_options.set(self.config['DEFAULT'].get('overwrite_option', 'Skip existing files'))  # Load overwrite option
         # Load compression setting
         compression_setting = self.config['DEFAULT'].get('use_compression', 'false').lower()
         self.use_compression_var.set(compression_setting == 'true')
@@ -188,7 +186,7 @@ class MP3Processor:
     self.config['DEFAULT']['ffmpeg_path'] = self.ffmpeg_path.get()
     self.config['DEFAULT']['src_dir'] = self.src_dir.get()
     self.config['DEFAULT']['dst_dir'] = self.dst_dir.get()
-    self.config['DEFAULT']['overwrite_all'] = str(self.overwrite_all_var.get()).lower()  # Store overwrite setting
+    self.config['DEFAULT']['overwrite_option'] = self.overwrite_options.get()  # Store overwrite option
     self.config['DEFAULT']['use_compression'] = str(self.use_compression_var.get()).lower()  # Store compression setting
     try:
       with open(DEFAULT_CONFIG_FILE, 'w') as configfile:
@@ -219,19 +217,24 @@ class MP3Processor:
     self.n_threads_combo.grid(row=3, column=1, sticky=tk.W)
     self.n_threads_combo.bind('<<ComboboxSelected>>', self.on_n_threads_change)
 
-    # Overwrite Checkbox
-    ttk.Checkbutton(self.master, text="Overwrite all", variable=self.overwrite_all_var).grid(row=4, column=0, sticky=tk.W, padx=5)
+    # Overwrite choice
+    ttk.Label(self.master, text="File Overwrite Options:").grid(row=4, column=0, sticky=tk.W, padx=5)
+    self.overwrite_options_combobox = ttk.Combobox(self.master,
+        textvariable=self.overwrite_options,
+        values=[ "Skip existing files", "Overwrite existing files", "Rename existing files"],
+        state="readonly")
+    self.overwrite_options_combobox.grid(row=4, column=1, sticky=tk.W)
 
     # Compression Checkbox
-    ttk.Checkbutton(self.master, text="Use compression", variable=self.use_compression_var).grid(row=4, column=1, sticky=tk.W, padx=5)
+    ttk.Checkbutton(self.master, text="Use compression", variable=self.use_compression_var).grid(row=5, column=0, sticky=tk.W, padx=5)
 
     # Run button
     self.run_button = tk.Button(self.master, text="Run", command=self.start_processing, state=tk.NORMAL, height=2, width=20)
-    self.run_button.grid(row=5, column=1, pady=10)  # Added pady for vertical space
+    self.run_button.grid(row=6, column=1, pady=10)  # Added pady for vertical space
 
     # Create a frame to hold the status_text and scrollbar
     status_frame = ttk.Frame(self.master)
-    status_frame.grid(row=6, column=0, columnspan=2, sticky='nsew', padx=5, pady=5)
+    status_frame.grid(row=7, column=0, columnspan=2, sticky='nsew', padx=5, pady=5)
 
     # Create the status_text widget
     self.status_text = tk.Text(status_frame, height=10, width=165, wrap=tk.WORD, state=tk.DISABLED)
@@ -284,12 +287,12 @@ class MP3Processor:
       os.makedirs(os.path.dirname(dst_file_path), exist_ok=True)
 
       # Handle Overwrite logic
-      self.overwrite_all = self.overwrite_all_var.get()
+      overwrite_option = self.overwrite_options.get()
       if os.path.exists(dst_file_path):
-        if self.overwrite_all:  # Overwrite existing
+        if overwrite_option == "Overwrite existing files":  # Overwrite existing
           self.status_update_queue.put(f"Overwriting: {dst_fname}")  # Use queue for status updates
           logging.debug(f"Overwriting: {dst_file_path}")
-        else:  # Rename instead of overwriting
+        elif overwrite_option == "Rename existing files":  # Rename instead of overwriting
           base, ext = os.path.splitext(relative_path)
           i = 1
           while os.path.exists(os.path.join(self.dst_dir.get(), f"{base}({i}){ext}")):
@@ -298,6 +301,10 @@ class MP3Processor:
           dst_fname = dst_file_path.split("\\")[-1]
           self.status_update_queue.put(f"Renaming: {dst_fname}")  # Use queue for status updates
           logging.debug(f"Renaming: {dst_file_path}")
+        elif overwrite_option == "Skip existing files":  # Skip processing
+          self.status_update_queue.put(f"Skipping: {dst_fname}")  # Use queue for status updates
+          logging.debug(f"Skipping: {dst_file_path}")
+          return  # Skip processing this file
       else:  # Normal output (no overwrite)
         self.status_update_queue.put(f"Processing: {dst_fname}")  # Use queue for status updates
         logging.debug(f"Processing: {dst_file_path}")
@@ -406,12 +413,13 @@ class MP3Processor:
       thread = threading.Thread(target=self.worker, args=(i,))
       self.threads.append(thread)
       thread.start()
+      logging.info(f"Started thread {thread.name}")
 
 
   #############################################################################
   def worker(self, thread_index):
     """Worker function for each thread, processing files from the queue."""
-    while True:
+    while not self.processing_complete_event.is_set():  # Check if the event is set
       try:
         file_path, relative_path = self.queue.get(timeout=1)
         self.process_file(file_path, relative_path, self.progress_bars[thread_index])
@@ -429,9 +437,22 @@ class MP3Processor:
 
   #############################################################################
   def on_closing(self):
-    """Handles window closing event, saving configuration."""
+    """Handles window closing event, saving configuration and cleaning up resources."""
+    logging.info("Closing application...")
+
+    # Signal threads to stop
+    self.processing_complete_event.set()  # Set the event to signal threads to stop
+
+    # Wait for all threads to finish
+    for thread in self.threads:
+      if thread.is_alive():
+        logging.info(f"Waiting for thread {thread.name} to finish...")
+        thread.join()
+
+    # Save configuration
     self.save_config()
     self.master.destroy()
+    logging.info("Application closed.")
 
 
   #############################################################################
@@ -450,7 +471,7 @@ class MP3Processor:
     self.progress_bars = []
     for i in range(self.n_threads.get()):
       progress_bar = CustomProgressBar(self.master, width=1202, height=20)
-      progress_bar.grid(row=7 + i, column=1)
+      progress_bar.grid(row=8 + i, column=1)
       self.progress_bars.append(progress_bar)
 
     self.run_button.config(state=tk.DISABLED)
