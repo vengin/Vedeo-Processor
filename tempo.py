@@ -17,9 +17,9 @@ import logging
 DEFAULT_FFMPEG_PATH = ""  # Change this if your ffmpeg path is different.
 DEFAULT_TEMPO = 1.8
 DEFAULT_N_THREADS = 4
-# SIZE_TO_TIME_COEFFICIENT = 38.37 / 10249195  # seconds per byte
 SIZE_TO_TIME_COEFFICIENT = 4.0E-07  # seconds per byte
 DEFAULT_CONFIG_FILE = "tempo_config.ini"
+GUI_TIMEOUT = 0.1
 
 
 #############################################################################
@@ -65,9 +65,9 @@ class CustomProgressBar(tk.Canvas):
 
 
   #############################################################################
-  def set_filename(self, filename):
+  def set_display_text(self, display_text):
     """Sets the filename to be displayed and redraws the bar."""
-    self.filename_var.set(filename)
+    self.filename_var.set(display_text)
     self.draw_progress_bar()
 
 
@@ -117,6 +117,8 @@ class MP3Processor:
     self.active_threads = 0
     self.total_files = 0
     self.processed_files = 0
+    self.total_size = 0  # Total size of all files
+    self.processed_size = 0  # Size of processed files
     self.error_files = 0
     self.status_text = None
     self.start_time = None
@@ -142,6 +144,10 @@ class MP3Processor:
     self.status_update_thread = threading.Thread(target=self.process_status_updates, daemon=True) # Explicitly set daemon
     self.status_update_thread.start()
     logging.info("Status update thread started.")
+
+    # self.total_progress_thread = threading.Thread(target=self.total_progress_updates, daemon=True) # Explicitly set daemon
+    # self.total_progress_thread.start()
+    # logging.info("Overall progress bar thread started.")
 
 
   #############################################################################
@@ -248,6 +254,11 @@ class MP3Processor:
     # Configure the status_text to use the scrollbar
     self.status_text.config(yscrollcommand=scrollbar.set)
 
+    # Create overall progress bar
+    ttk.Label(self.master, text="Overall progress:").grid(row=8, column=0, sticky=tk.W, padx=5)
+    self.total_progress = CustomProgressBar(self.master, width=1202, height=25)
+    self.total_progress.grid(row=8, column=1, pady=10)  # Place it above progress bars for processed files
+
 
   #############################################################################
   def on_n_threads_change(self, event):
@@ -313,10 +324,10 @@ class MP3Processor:
       # %ffmpeg% -i <ifile.mp3> -filter:a atempo=1.8 -vn <ofile.mp3> -y -nostats
       ffmpeg_command = [
         self.ffmpeg_path.get(),
-        "-i", src_file_path,
+        "-i", src_file_path, # somehow filenames with spaces work without "" (f"\"{src_file_path}\"" doesn't work)
         "-filter:a", f"atempo={self.tempo.get()}",  # audio filter
         "-vn",  # Disable video stream
-        dst_file_path,
+        dst_file_path,  # somehow filenames with spaces work without "" (f"\"{dst_file_path}\"" doesn't work)
         "-y",  # Force overwrite output file
         "-nostats",  # Suppress extra logging
       ]
@@ -338,11 +349,13 @@ class MP3Processor:
 
       file_size = os.path.getsize(src_file_path)
       expected_duration = file_size * SIZE_TO_TIME_COEFFICIENT
+
+      #
       start_time = time.time()
       process = subprocess.Popen(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 
-      # Create a separate thread to monitor the process and update the progress bar
-      progress_thread = threading.Thread(target=self.monitor_process,
+      # Create a separate thread to monitor mp3 file processing and update the progress bar
+      progress_thread = threading.Thread(target=self.monitor_process_bar,
                                          args=(process, expected_duration, progress_bar, dst_fname))
       progress_thread.start()
 
@@ -351,6 +364,7 @@ class MP3Processor:
       logging.info(f"Processed file {src_file_path}")
       progress_thread.join()  # Wait for the progress thread to finish.
       progress_bar.set_progress(100)  # Ensure the progress bar reaches 100%
+      self.processed_size += file_size # for overall progress bar
       self.master.update_idletasks()
 
     except FileNotFoundError:
@@ -367,21 +381,27 @@ class MP3Processor:
       self.error_files += 1
     finally:
       self.processed_files += 1
+      # Update overall progress bar
+      total_progress_percentage = int((self.processed_size / self.total_size) * 100) if self.total_size >0 else 0
+      total_progress_message = f"{self.processed_files}/{self.total_files} {total_progress_percentage}%"
+      self.total_progress.set_progress(total_progress_percentage)
+      self.total_progress.set_display_text(total_progress_message)
+
       if self.processed_files == self.total_files:
         self.master.after(100, self.finish_processing)
 
 
   #############################################################################
-  def monitor_process(self, process, expected_duration, progress_bar, filename):
-    """Monitors the FFMPEG process and updates the progress bar."""
+  def monitor_process_bar(self, process, expected_duration, progress_bar, filename):
+    """Monitors mp3 file processing and updates the progress bar."""
     start_time = time.time()
-    progress_bar.set_filename(filename)
+    progress_bar.set_display_text(filename)
     while process.poll() is None:
       elapsed_time = time.time() - start_time
       progress = min(100, (elapsed_time / expected_duration) * 100)
       progress_bar.set_progress(progress)
       self.master.update_idletasks()
-      time.sleep(0.1)
+      time.sleep(GUI_TIMEOUT)
     progress_bar.set_progress(100)  # Ensure the progress bar reaches 100%
     self.master.update_idletasks()
 
@@ -394,6 +414,8 @@ class MP3Processor:
     self.queue = queue.Queue()
     self.processed_files_set.clear()
 
+    self.total_size = 0
+    self.processed_size = 0
     for root, _, files in os.walk(src_dir):
       for file in files:
         if file.lower().endswith(".mp3"):
@@ -401,7 +423,9 @@ class MP3Processor:
           relative_path = os.path.relpath(full_path, src_dir)
           self.queue.put((full_path, relative_path))
           self.total_files += 1
+          self.total_size += os.path.getsize(full_path)
 
+    logging.debug(f"total_files: {self.total_files}, Total file size: {self.total_size}")
     self.start_threads()
 
 
@@ -446,10 +470,10 @@ class MP3Processor:
 
     try:
       self.status_update_thread.join(timeout=2)
+      #self.total_progress_thread.join(timeout=2)
     except Exception as e:
-      logging.error(f"Error joining status update thread: {e}")
+      logging.error(f"Error joining status update (total progress) thread: {e}")
 
-    logging.info("Threads finished (or timed out), closing window.")
     self.master.destroy()
 
 
@@ -465,16 +489,18 @@ class MP3Processor:
       progress_bar.destroy()
     self.progress_bars.clear()
 
-    # Create n_threads CustomProgressBar dynamically
+    # Create progress bars dynamically
     self.progress_bars = []
     for i in range(self.n_threads.get()):
       progress_bar = CustomProgressBar(self.master, width=1202, height=20)
-      progress_bar.grid(row=8 + i, column=1)
+      progress_bar.grid(row=9 + i, column=1)
       self.progress_bars.append(progress_bar)
 
     self.run_button.config(state=tk.DISABLED)
     for progress_bar in self.progress_bars:
       progress_bar.set_progress(0)
+    self.total_progress.set_progress(0)
+    self.total_progress.set_display_text("0/0 0%")
     self.active_threads = 0
     self.processed_files = 0
     self.total_files = 0
@@ -511,8 +537,11 @@ class MP3Processor:
       end_time = time.time()
       processing_time = end_time - self.start_time
       if self.error_files == 0:
-        msg = f"\n{self.processed_files} files processed in {processing_time:.2f} seconds"
-        self.update_status(msg)
+        if processing_time < 60:
+          msg = f"{self.processed_files} files processed in {processing_time:.2f} sec"
+        else:
+          msg = f"{self.processed_files} files processed in {int(processing_time/60)} min {int(processing_time%60)} sec"
+        self.update_status("\n" + msg)
         logging.info(msg)
       else:
         msg = f"\nProcessed / Total (Erorrs): {self.processed_files} / {self.total_files} ({self.error_files}) files in {processing_time:.2f} seconds"
@@ -574,7 +603,7 @@ class MP3Processor:
     """Processes status updates from the queue."""
     while True:
       try:
-        message = self.status_update_queue.get(timeout=0.1)  # Short timeout to avoid blocking indefinitely
+        message = self.status_update_queue.get(timeout=GUI_TIMEOUT)  # Short timeout to avoid blocking indefinitely
         if message is None: # Check for exit signal
           break
         self.update_status(message)
@@ -584,6 +613,17 @@ class MP3Processor:
       except Exception as e:
         logging.exception("Error in status update thread: %s", e)
         break
+
+
+  # #############################################################################
+  # def total_progress_updates(self):
+  #   """Overall progress bar update"""
+  #   while not self.processing_complete:
+  #     total_progress = int((self.processed_size / self.total_size) * 100) if self.total_size >0 else 0
+  #     total_progress_msg = f"{self.processed_files}/{self.total_files} {total_progress}%"
+  #     self.total_progress.set_progress(total_progress)
+  #     self.total_progress.set_display_text(total_progress_msg)
+  #     time.sleep(GUI_TIMEOUT)
 
 
 ###############################################################################
