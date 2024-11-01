@@ -11,15 +11,16 @@ import threading
 import queue
 import time
 import logging
-
+import re
+import select
 
 # Default values for the application
-DEFAULT_FFMPEG_PATH = ""  # Change this if your ffmpeg path is different.
-DEFAULT_TEMPO = 1.8
-DEFAULT_N_THREADS = 4
-SIZE_TO_TIME_COEFFICIENT = 4.0E-07  # seconds per byte
-DEFAULT_CONFIG_FILE = "tempo_config.ini"
+DFLT_FFMPEG_PATH = "d:/PF/_Tools/ffmpeg/bin/ffmpeg.exe"  # Change this if your ffmpeg path is different.
+DFLT_TEMPO = 1.8
+DFLT_N_THREADS = 4
+DFLT_CONFIG_FILE = "tempo_config.ini"
 GUI_TIMEOUT = 0.1
+DFLT_BITRATE = 48 # i.e. 48K
 
 
 #############################################################################
@@ -82,11 +83,11 @@ class MP3Processor:
     master.title("MP3 Tempo Changer")
 
     # Default values (used only if config file loading fails)
-    self.ffmpeg_path_default = DEFAULT_FFMPEG_PATH
-    self.tempo_default = DEFAULT_TEMPO
+    self.ffmpeg_path_default = DFLT_FFMPEG_PATH
+    self.tempo_default = DFLT_TEMPO
     self.src_dir_default = ""
     self.dst_dir_default = ""
-    self.n_threads_default = DEFAULT_N_THREADS
+    self.n_threads_default = DFLT_N_THREADS
     self.overwrite_options = tk.StringVar()  # Initialize here
     self.use_compression_var = tk.BooleanVar()
 
@@ -137,7 +138,7 @@ class MP3Processor:
     # Bind the save_config method to the window close event.
     self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-    self.setup_logging('INFO')  # 'INFO' or 'DEBUG' for more detailed logging
+    self.setup_logging('DEBUG')  # 'INFO' or 'DEBUG' for more detailed logging
     logging.info("MP3Processor initialized")
 
     self.status_update_queue = queue.Queue()
@@ -145,23 +146,19 @@ class MP3Processor:
     self.status_update_thread.start()
     logging.info("Status update thread started.")
 
-    # self.total_progress_thread = threading.Thread(target=self.total_progress_updates, daemon=True) # Explicitly set daemon
-    # self.total_progress_thread.start()
-    # logging.info("Overall progress bar thread started.")
-
 
   #############################################################################
   def load_config(self):
     """Loads application configuration from tempo_config.ini."""
-    config_file_read = self.config.read(DEFAULT_CONFIG_FILE)
+    config_file_read = self.config.read(DFLT_CONFIG_FILE)
     if not config_file_read:
       logging.info("Warning: Config file not found or corrupted. Using defaults.")
       self.config['DEFAULT'] = {
-        'ffmpeg_path': DEFAULT_FFMPEG_PATH,
-        'tempo': str(DEFAULT_TEMPO),
+        'ffmpeg_path': DFLT_FFMPEG_PATH,
+        'tempo': str(DFLT_TEMPO),
         'src_dir': '',
         'dst_dir': '',
-        'n_threads': str(DEFAULT_N_THREADS),
+        'n_threads': str(DFLT_N_THREADS),
         'overwrite_option': 'Skip existing files',  # Default option
         'use_compression': 'false',  # Default no compression
       }
@@ -177,7 +174,7 @@ class MP3Processor:
       except (KeyError, IndexError):
         messagebox.showwarning("Config Error",
           "Tempo value missing or malformed in config file. Using default.")
-        self.config['DEFAULT']['tempo'] = str(DEFAULT_TEMPO)
+        self.config['DEFAULT']['tempo'] = str(DFLT_TEMPO)
 
 
   #############################################################################
@@ -196,7 +193,7 @@ class MP3Processor:
     self.config['DEFAULT']['overwrite_option'] = self.overwrite_options.get()  # Store overwrite option
     self.config['DEFAULT']['use_compression'] = str(self.use_compression_var.get()).lower()  # Store compression setting
     try:
-      with open(DEFAULT_CONFIG_FILE, 'w') as configfile:
+      with open(DFLT_CONFIG_FILE, 'w') as configfile:
         self.config.write(configfile)
     except Exception as e:
       messagebox.showerror("Error", f"Could not save config file: {e}")
@@ -286,6 +283,33 @@ class MP3Processor:
 
 
   #############################################################################
+  def get_mp3_info(self, ffmpeg_path, src_file_path):
+    try:
+      command = [ffmpeg_path, "-i", src_file_path, "-hide_banner"]
+      process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+      stdout, stderr = process.communicate()
+
+      match = re.search(r"Duration: (\d{2}:\d{2}:\d{2}\.\d{2}), start: \d+\.\d+, bitrate: (\d+) kb\/s", stderr)
+      if match:
+        duration_str = match.group(1)
+        bitrate_kbps = int(match.group(2))
+
+        #minutes, seconds = map(int, duration_str.split(":")[:2])
+        minutes = int(duration_str.split(":")[1])
+        seconds = int(duration_str.split(":")[2].split(".")[0])
+        total_seconds = minutes*60 + seconds
+
+        return bitrate_kbps, total_seconds, True
+      else:
+        print(f"Error parsing ffmpeg output: {stderr}")
+        return None, None, False
+
+    except Exception as e:
+      print(f"An error occurred in get_mp3_info: {e}")
+      return None, None, False
+
+
+  #############################################################################
   def process_file(self, src_file_path, relative_path, progress_bar):
     """Processes a single MP3 file, handling potential overwrites."""
     if relative_path in self.processed_files_set:
@@ -295,7 +319,6 @@ class MP3Processor:
     try:
       dst_file_path = os.path.join(self.dst_dir.get(), relative_path)
       dst_fname = dst_file_path.split("\\")[-1]
-
       os.makedirs(os.path.dirname(dst_file_path), exist_ok=True)
 
       # Handle Overwrite logic
@@ -321,15 +344,24 @@ class MP3Processor:
         self.status_update_queue.put(f"Processing: {dst_fname}")  # Use queue for status updates
         logging.debug(f"Processing: {dst_file_path}")
 
+      # Get source file bitrate and duration, to calculate dst file estimate size
+      src_bitrate, duration, success = self.get_mp3_info(self.ffmpeg_path.get(), src_file_path)
+      if not success:
+        raise Exception("Could not get MP3 info")
+      dst_bitrate = min(DFLT_BITRATE, src_bitrate)
+      # Calculate Estimated output size in KiB divided by Tempo
+      dst_est_sz_kbt = int(dst_bitrate * duration / (8 * self.tempo.get())) #in KiB
+
       # %ffmpeg% -i <ifile.mp3> -filter:a atempo=1.8 -vn <ofile.mp3> -y -nostats
       ffmpeg_command = [
         self.ffmpeg_path.get(),
         "-i", src_file_path, # somehow filenames with spaces work without "" (f"\"{src_file_path}\"" doesn't work)
         "-filter:a", f"atempo={self.tempo.get()}",  # audio filter
         "-vn",  # Disable video stream
+        "-b:a", f"{dst_bitrate}k", # Fixed Bit-Rate
         dst_file_path,  # somehow filenames with spaces work without "" (f"\"{dst_file_path}\"" doesn't work)
         "-y",  # Force overwrite output file
-        "-nostats",  # Suppress extra logging
+#        "-nostats",  # Suppress extra logging
       ]
 
       # Use compression if enabled
@@ -347,24 +379,59 @@ class MP3Processor:
       # Debug log the command
       logging.debug(f"FFMPEG command: {' '.join(ffmpeg_command)}")
 
-      file_size = os.path.getsize(src_file_path)
-      expected_duration = file_size * SIZE_TO_TIME_COEFFICIENT
+      src_size = os.path.getsize(src_file_path)
+      q = queue.Queue()
 
-      #
-      start_time = time.time()
-      process = subprocess.Popen(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+      process = subprocess.Popen(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-      # Create a separate thread to monitor mp3 file processing and update the progress bar
-      progress_thread = threading.Thread(target=self.monitor_process_bar,
-                                         args=(process, expected_duration, progress_bar, dst_fname))
-      progress_thread.start()
+      def read_stderr(p, q):
+        for line in iter(p.stderr.readline, ''):
+          q.put(line)
+        q.put(None)
 
-      stdout, stderr = process.communicate()
-      end_time = time.time()
-      logging.info(f"Processed file {src_file_path}")
-      progress_thread.join()  # Wait for the progress thread to finish.
-      progress_bar.set_progress(100)  # Ensure the progress bar reaches 100%
-      self.processed_size += file_size # for overall progress bar
+      stderr_thread = threading.Thread(target=read_stderr, args=(process, q))
+      stderr_thread.daemon = True
+      stderr_thread.start()
+
+      processed_size_kb = 0 # Initialize in KiB
+      progress_bar.set_display_text(os.path.basename(dst_file_path)) # Set filename here
+      try:
+        while True:
+          try:
+            line = q.get(0.1) #q.get(timeout=10)
+            if line is None:
+              break
+  #          print(line)
+            # match = re.search(r"KiB audio:\s*(\d+)\w+", line)
+            # if match:
+            #   src_size2 = int(match.group(1))
+            #   print(f"sz2={src_size2}")
+            match = re.search(r"size=\s*(\d+)\w+", line)
+            if match:
+              processed_size_kb = int(match.group(1)) # in KiB
+
+              # # Convert both to bytes for consistent calculation
+              # processed_size_bytes = processed_size_kb * 1024
+              progress = min(100, (processed_size_kb / dst_est_sz_kbt) * 100)
+#              print(f"pr_sz={processed_size_kb}, dst_sz={dst_est_sz_kbt}, prgrs={progress}")
+              progress_bar.set_progress(progress)
+              self.master.update_idletasks()
+
+          except queue.Empty:
+    #        print("Queue is empty - likely race condition")
+            if process.poll() is not None:
+              break
+            time.sleep(0.1)
+
+      except Exception as e:
+        print(f"An error occurred: {e}")
+
+      finally:
+        progress_bar.set_progress(100)
+        self.master.update_idletasks()
+        stderr_thread.join()
+
+      self.processed_size += src_size  # for overall progress bar
       self.master.update_idletasks()
 
     except FileNotFoundError:
@@ -372,7 +439,7 @@ class MP3Processor:
       self.status_update_queue.put(f"Error: FFMPEG not found for {relative_path}")  # Use queue for status updates
       self.error_files += 1
     except subprocess.CalledProcessError as e:
-      logging.error(f"ffmpeg error processing {src_file_path}: return code {e.returncode}, output: {e.stderr.decode()}")
+      logging.error(f"ffmpeg error processing {src_file_path}: return code {e.returncode}, output: {e.stderr}")
       self.status_update_queue.put(f"Error processing: {relative_path}")  # Use queue for status updates
       self.error_files += 1
     except Exception as e:
@@ -389,21 +456,6 @@ class MP3Processor:
 
       if self.processed_files == self.total_files:
         self.master.after(100, self.finish_processing)
-
-
-  #############################################################################
-  def monitor_process_bar(self, process, expected_duration, progress_bar, filename):
-    """Monitors mp3 file processing and updates the progress bar."""
-    start_time = time.time()
-    progress_bar.set_display_text(filename)
-    while process.poll() is None:
-      elapsed_time = time.time() - start_time
-      progress = min(100, (elapsed_time / expected_duration) * 100)
-      progress_bar.set_progress(progress)
-      self.master.update_idletasks()
-      time.sleep(GUI_TIMEOUT)
-    progress_bar.set_progress(100)  # Ensure the progress bar reaches 100%
-    self.master.update_idletasks()
 
 
   #############################################################################
@@ -615,20 +667,8 @@ class MP3Processor:
         break
 
 
-  # #############################################################################
-  # def total_progress_updates(self):
-  #   """Overall progress bar update"""
-  #   while not self.processing_complete:
-  #     total_progress = int((self.processed_size / self.total_size) * 100) if self.total_size >0 else 0
-  #     total_progress_msg = f"{self.processed_files}/{self.total_files} {total_progress}%"
-  #     self.total_progress.set_progress(total_progress)
-  #     self.total_progress.set_display_text(total_progress_msg)
-  #     time.sleep(GUI_TIMEOUT)
-
-
 ###############################################################################
 if __name__ == "__main__":
   root = tk.Tk()
   app = MP3Processor(root)
   root.mainloop()
-
