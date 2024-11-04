@@ -118,6 +118,7 @@ class MP3Processor:
     self.total_dst_sz_lock = threading.Lock()  # Lock for thread-safe access
     self.total_src_sz = 0
     self.error_files = 0
+    self.skipped_files = 0
     self.status_text = None
     self.start_time = None
     self.use_compression = False
@@ -310,6 +311,7 @@ class MP3Processor:
         logging.debug(msg)
         return dst_file_path
       elif overwrite_option == "Skip existing files":  # Skip processing
+#        self.skipped_files += 1
         msg = f"Skipping: {relative_path}"
         self.status_update_queue.put(msg)  # Use queue for status updates
         logging.debug(msg)
@@ -481,7 +483,10 @@ class MP3Processor:
           # Get MP3 info and calculate size only if not skipping
           overwrite_option = self.overwrite_options.get()
           dst_file_path = os.path.join(self.dst_dir.get(), relative_path)
-          if not os.path.exists(dst_file_path) or overwrite_option in ["Overwrite existing files", "Rename existing files"]:
+          if os.path.exists(dst_file_path) and overwrite_option == "Skip existing files":
+            self.skipped_files += 1
+            self.file_info[relative_path] = {"dst_bitrate": 0, "duration": 0, "dst_est_sz_kbt": 0}
+          else:
             src_bitrate, duration, success = self.get_mp3_info(self.ffmpeg_path.get(), full_path)
             if success:
               dst_bitrate = min(DFLT_BITRATE_KB, src_bitrate)
@@ -492,7 +497,7 @@ class MP3Processor:
               logging.error(f"Could not get MP3 info for {full_path}")
               self.error_files += 1
 
-    msg = f"{self.total_files} files found ({self.total_src_sz/(1024*1024):.2f}) MB"
+    msg = f"{self.total_files} files found, {self.total_src_sz/(1024*1024):.2f} MB"
     self.update_status(msg)
     logging.info(msg)
 
@@ -558,7 +563,7 @@ class MP3Processor:
     self.processing_complete = False
     self.active_threads = 0
     self.processed_files = 0
-    self.start_time = time.time()
+    self.skipped_files = 0
     self.processed_files_set.clear()
 
     # Find, count and queue for processing all mp3 files
@@ -588,6 +593,7 @@ class MP3Processor:
     self.total_progress.set_progress(0)
     self.total_progress.set_display_text("0/0 0%")
 
+    self.start_time = time.time()
     msg = "Starting processing..."
     self.update_status(msg)
     logging.info(msg)
@@ -618,12 +624,21 @@ class MP3Processor:
       if self.error_files == 0:
         total_dst_sz_mb = self.total_dst_sz_kb / 1024
         total_src_sz_mb = self.total_src_sz / (1024 * 1024)
-        msg = f"{self.processed_files} files processed ({total_dst_sz_mb:.2f}) MB in "
+        # Add the number of processed files
+        msg = f"{self.processed_files} files processed"
+        # Add the number of skipped files
+        if self.skipped_files:
+          msg += f" ({self.skipped_files} skipped)"
+        # Add size
+        msg += f", {total_dst_sz_mb:.2f} MB in "
+        # Add time
         if processing_time < 60:
           msg += f"{processing_time:.2f} sec"
         else:
           msg += f"{int(processing_time/60)} min {int(processing_time%60)} sec"
-        msg += f". Compression ratio {(total_src_sz_mb / total_dst_sz_mb):.2f}"
+        # Add compression ratio
+        if total_dst_sz_mb:
+          msg += f". Compression ratio {(total_src_sz_mb / total_dst_sz_mb):.2f}"
         self.update_status("\n" + msg)
         logging.info(msg)
       else:
