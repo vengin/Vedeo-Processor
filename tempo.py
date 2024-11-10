@@ -136,7 +136,7 @@ class MP3Processor:
     # Bind the save_config method to the window close event.
     self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-    self.setup_logging('INFO')  # 'INFO' or 'DEBUG' for more detailed logging
+    self.setup_logging('DEBUG')  # 'INFO' or 'DEBUG' for more detailed logging
     logging.info("MP3Processor initialized")
 
     self.status_update_queue = queue.Queue()
@@ -271,17 +271,33 @@ class MP3Processor:
     """Gets MP3 info (Duration, Bitrate, processed size) using ffmpeg."""
     try:
       command = [ffmpeg_path, "-i", src_file_path, "-hide_banner"]
-      process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+      logging.debug(f"GetMp3InfoFFMPEG command: {' '.join(command)}")
+#      process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
+#      process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='cp1251')
+      process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
       stdout, stderr = process.communicate()
 
+      # Decode stderr to a string
+      try:
+        ffmpeg_out = stderr.decode('utf-8', errors='replace')
+      except UnicodeDecodeError:
+        ffmpeg_out = stderr.decode('cp1251', errors='replace')
+      except Exception as e:
+        logging.error(f"Error decoding GetMp3InfoFFMPEG command: {e}")
+        raise e
+      # end try
+
+#      print(ffmpeg_out)
+
       #  Example: "Duration: 00:01:25.49, start: 0.000000, bitrate: 69 kb/s"
-      match = re.search(r"Duration: \d+:(\d+):(\d+)\.\d+, start: \d+\.\d+, bitrate: (\d+) kb\/s", stderr)
+      match = re.search(r"Duration: \d+:(\d+):(\d+)\.\d+, start: \d+\.\d+, bitrate: (\d+) kb\/s", ffmpeg_out)
       if match:
         minutes, seconds, bitrate_kbps = match.groups()
         total_seconds = int(minutes) * 60 + int(seconds)
+        print(f"ttl_sec={total_seconds}, BR={bitrate_kbps}")
         return int(bitrate_kbps), total_seconds, True
       else:
-        logging.error(f"Error parsing ffmpeg output: {stderr}")
+        logging.error(f"Error parsing ffmpeg output: {ffmpeg_out}")
         return None, None, False
 
     except Exception as e:
@@ -326,14 +342,22 @@ class MP3Processor:
   #############################################################################
   def generate_ffmpeg_command(self, src_file_path, dst_file_path, bit_rate):
     """Generates the FFMPEG command with tempo and optional compression."""
+    # Convert paths to string and handle potential encoding issues
+    src_file_path = str(src_file_path)
+    dst_file_path = str(dst_file_path)
+
     ffmpeg_command = [
-      self.ffmpeg_path.get(),
+      str(self.ffmpeg_path.get()),
       "-i", src_file_path,
       "-filter:a", f"atempo={self.tempo.get()}",  # audio filter
       "-vn",  # Disable video stream
-      "-b:a", f"{bit_rate}k", # Fixed Bit-Rate
+#      "-b:a", f"{bit_rate}k",  # Fixed Bit-Rate
       dst_file_path,
       "-y",  # Force overwrite output file
+      # To minimize FFmpeg’s output and only show the line with progress updates
+      "-hide_banner",
+      "-loglevel", "error",
+      "-stats",
     ]
 
     if self.use_compression_var.get():
@@ -345,7 +369,7 @@ class MP3Processor:
       # Insert after "src_file_path" before "-filter:a"
       ffmpeg_command[3:3] = ffmpeg_compression_params
 
-    logging.debug(f"FFMPEG command: {' '.join(ffmpeg_command)}")
+    logging.debug(f"ProcessFile: FFMPEG command: {' '.join(ffmpeg_command)}")
     return ffmpeg_command
 
 
@@ -355,10 +379,29 @@ class MP3Processor:
     q = queue.Queue()
 
     def read_stderr(p, q):
-      for line in iter(p.stderr.readline, ''):
-        q.put(line)
-      q.put(None)
+      try:
+        # Open stderr in binary mode
+        while True:
+          line = p.stderr.readline()
+          if not line:
+            break
+          try:
+            # Always treat as bytes and decode
+            if isinstance(line, bytes):
+              try:
+                line = line.decode('utf-8', errors='replace')
+              except UnicodeDecodeError:
+                line = line.decode('cp1251', errors='replace')
+            q.put(line)
+          except Exception as e:
+            logging.error(f"Error decoding line: {e}")
+            continue
+      except Exception as e:
+        logging.error(f"Error reading stderr: {e}")
+      finally:
+        q.put(None)
 
+    # Create process with binary output
     stderr_thread = threading.Thread(target=read_stderr, args=(process, q))
     stderr_thread.daemon = True
     stderr_thread.start()
@@ -371,9 +414,11 @@ class MP3Processor:
           if line is None:
             break
           match = re.search(r"size=\s*(\d+)\w+", line)
+          print(line)
           if match:
             processed_sz_kb = int(match.group(1))  # in KB
             progress = min(100, (processed_sz_kb / dst_est_sz_kbt) * 100)
+            print(f"processed_sz_kb={processed_sz_kb}, dst_est_sz_kbt={dst_est_sz_kbt}")
             progress_bar.set_progress(progress)
             self.master.update_idletasks()
 
@@ -443,8 +488,14 @@ class MP3Processor:
 
       # Generate ffmpeg command with tempo and optional compression
       ffmpeg_command = self.generate_ffmpeg_command(src_file_path, dst_file_path, dst_bitrate)
-      # Start individual FFMPEG process for each file (n_threads) and
-      process = subprocess.Popen(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+      # Start FFMPEG process in binary mode for each file (n_threads)
+      process = subprocess.Popen(
+        ffmpeg_command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,  # Use binary mode
+        bufsize=1    # Line buffered
+      )
       # Monitor and update each mp3 file processing progress
       self.monitor_progress(process, progress_bar, dst_est_sz_kbt, relative_path)
       self.master.update_idletasks()
@@ -491,6 +542,7 @@ class MP3Processor:
             if success:
               dst_bitrate = min(DFLT_BITRATE_KB, src_bitrate)
               dst_est_sz_kbt = int(dst_bitrate * duration / (8 * self.tempo.get())) # in KB
+              print(f"{dst_file_path}: dst_est_sz_kbt={dst_est_sz_kbt}")
               self.file_info[relative_path] = {"dst_bitrate": dst_bitrate, "duration": duration, "dst_est_sz_kbt": dst_est_sz_kbt}
               self.total_dst_sz_kb += dst_est_sz_kbt
             else:
