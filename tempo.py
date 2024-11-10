@@ -18,8 +18,8 @@ DFLT_FFMPEG_PATH = "d:/PF/_Tools/ffmpeg/bin/ffmpeg.exe"  # Change this if your f
 DFLT_TEMPO = 1.8
 DFLT_N_THREADS = 4
 DFLT_CONFIG_FILE = "tempo_config.ini"
-GUI_TIMEOUT = 0.1
-DFLT_BITRATE_KB = 64 # i.e. 64K
+GUI_TIMEOUT = 0.3
+DFLT_BITRATE_KB = 55 # i.e. 64K
 
 
 #############################################################################
@@ -286,10 +286,10 @@ class MP3Processor:
       # end try
 
       #  Example: "Duration: 00:01:25.49, start: 0.000000, bitrate: 69 kb/s"
-      match = re.search(r"Duration: \d+:(\d+):(\d+)\.\d+, start: \d+\.\d+, bitrate: (\d+) kb\/s", ffmpeg_out)
+      match = re.search(r"Duration: (\d+):(\d+):(\d+)\.\d+, start: \d+\.\d+, bitrate: (\d+) kb\/s", ffmpeg_out)
       if match:
-        minutes, seconds, bitrate_kbps = match.groups()
-        total_seconds = int(minutes) * 60 + int(seconds)
+        hours, minutes, seconds, bitrate_kbps = match.groups()
+        total_seconds = int(hours)*60*60 + int(minutes)*60 + int(seconds)
         return int(bitrate_kbps), total_seconds, True
       else:
         logging.error(f"Error parsing ffmpeg output: {ffmpeg_out}")
@@ -410,13 +410,14 @@ class MP3Processor:
           match = re.search(r"size=\s*(\d+)\w+", line)
           if match:
             processed_sz_kb = int(match.group(1))  # in KB
-            progress = min(100, (processed_sz_kb / dst_est_sz_kbt) * 100) # Do not exceed 100%
+            progress = min(100, (processed_sz_kb / dst_est_sz_kbt) * 100) if dst_est_sz_kbt > 0 else 0 # Do not exceed 100%
             progress_bar.set_progress(progress)
             self.master.update_idletasks()
 
             with self.processed_sz_arr_lock:
               self.processed_sz_arr[relative_path] = processed_sz_kb #Store by filename
             self.update_total_progress()
+            time.sleep(GUI_TIMEOUT)
 
         except queue.Empty:
           if process.poll() is not None:
@@ -440,18 +441,18 @@ class MP3Processor:
     with self.processed_sz_arr_lock:
       total_processed_size_kb = sum(self.processed_sz_arr.values())
     total_progress_percentage = int((total_processed_size_kb / self.total_dst_sz_kb) * 100) if self.total_dst_sz_kb > 0 else 0
-    # We're using DFLT_BITRATE_KB=64K as upper limit, but it can make the dst_est_sz_kbt < total_processed_size_kb
+    # We're using DFLT_BITRATE_KB as upper limit, but it can make the dst_est_sz_kbt < total_processed_size_kb
     # Leading to progress bars >100%. Thus will manually limit any values >=100% to 100%
     total_progress_percentage = min(100, total_progress_percentage)
     logging.debug(f"ttl_prcssd_sz_kb={total_processed_size_kb}, ttl_sz={self.total_dst_sz_kb}, prgrss={total_progress_percentage}")
-    total_progress_message = f"{self.processed_files}/{self.total_files} {total_progress_percentage}%"
+    total_progress_message = f"{total_progress_percentage}%  {self.processed_files}/{self.total_files}"
     self.total_progress.set_progress(total_progress_percentage)
     self.total_progress.set_display_text(total_progress_message)
 
     # When all files processed, set progress to 100% (might be a bit smaller/larger otherwise)
     if self.processed_files == self.total_files:
       total_progress_percentage = 100
-      total_progress_message = f"{self.processed_files}/{self.total_files} {total_progress_percentage}%"
+      total_progress_message = f"{total_progress_percentage}%  {self.processed_files}/{self.total_files}"
       self.total_progress.set_progress(total_progress_percentage)
       self.total_progress.set_display_text(total_progress_message)
       self.master.after(100, self.finish_processing)
@@ -535,17 +536,19 @@ class MP3Processor:
             src_bitrate, duration, success = self.get_mp3_info(self.ffmpeg_path.get(), full_path)
             if success:
               # In FFMPEG fixed bitrate (-b:a 64k) doesn't work in combination wtih Quality Setting for VBR (-q:a 7)
-              # According to GPT for VBR (-q:a 7) has ~100K average bitrate. In practise it is closer to 50-65K.
-              # We'll use DFLT_BITRATE_KB=64K as upper limit, but it can make the dst_est_sz_kbt < total_processed_size_kb
+              # According to GPT for VBR (-q:a 7) has ~100K average bitrate. In practise it is closer to 55K.
+              # We'll use DFLT_BITRATE_KB as upper limit, but it can make the dst_est_sz_kbt < total_processed_size_kb
               # Leading to progress bars >100%. Thus will manually limit any values >=100% to 100%
               dst_bitrate = min(DFLT_BITRATE_KB, src_bitrate)
               dst_est_sz_kbt = int(dst_bitrate * duration / (8 * self.tempo.get())) # in KB
               self.file_info[relative_path] = {"dst_bitrate": dst_bitrate, "duration": duration, "dst_est_sz_kbt": dst_est_sz_kbt}
+              logging.debug(f"{relative_path}: dst_est_sz_kbt={dst_est_sz_kbt}")
               self.total_dst_sz_kb += dst_est_sz_kbt
             else:
               logging.error(f"Could not get MP3 info for {full_path}")
               self.error_files += 1
 
+    logging.debug(f"total_dst_sz_kb={self.total_dst_sz_kb}")
     msg = f"{self.total_files} files found, {self.total_src_sz/(1024*1024):.2f} MB"
     self.update_status(msg)
     logging.info(msg)
@@ -640,7 +643,7 @@ class MP3Processor:
     for progress_bar in self.progress_bars:
       progress_bar.set_progress(0)
     self.total_progress.set_progress(0)
-    self.total_progress.set_display_text("0/0 0%")
+    self.total_progress.set_display_text("0%  0/0")
 
     self.start_time = time.time()
     msg = "Starting processing..."
