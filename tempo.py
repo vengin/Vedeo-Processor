@@ -4,6 +4,7 @@ from tkinter import ttk
 from tkinter import scrolledtext
 from tkinter import messagebox
 from datetime import datetime
+from tinytag import TinyTag
 import configparser
 import os
 import subprocess
@@ -66,14 +67,14 @@ class CustomProgressBar(tk.Canvas):
 
 
 #############################################################################
-class MP3Processor:
+class AudioProcessor:
   """
-  Main class for the MP3 tempo changer application.
+  Main class for the audio tempo changer application.
   Handles GUI interaction, configuration, and processing logic.
   """
   def __init__(self, master):
     self.master = master
-    master.title("MP3 Tempo Changer")
+    master.title("Audio Tempo Changer")
 
     # Default values (used only if config file loading fails)
     self.ffmpeg_path_default = DFLT_FFMPEG_PATH
@@ -137,14 +138,14 @@ class MP3Processor:
     self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     self.setup_logging('INFO')  # 'INFO' or 'DEBUG' for more detailed logging
-    logging.info("MP3Processor initialized")
+    logging.info("AudioProcessor initialized")
 
     self.status_update_queue = queue.Queue()
     self.status_update_thread = threading.Thread(target=self.process_status_updates, daemon=True) # Explicitly set daemon
     self.status_update_thread.start()
     logging.info("Status update thread started.")
 
-    # Using this flag for more gracefull shutdown, if closing application while processsing files is active
+    # Using this flag for more gracefull shutdown, if closing application while files are still processed
     self.is_shutting_down = False
 
 
@@ -270,37 +271,20 @@ class MP3Processor:
 
 
   #############################################################################
-  def get_mp3_info(self, ffmpeg_path, src_file_path):
-    """Gets MP3 info (Duration, Bitrate, processed size) using ffmpeg."""
+  def get_metadata_info(self, ffmpeg_path, src_file_path):
+    """Gets audio file metadata (Duration, Bitrate, processed size) using TinyTag."""
     try:
-      command = [ffmpeg_path, "-i", src_file_path, "-hide_banner"]
-      logging.debug(f"GetMp3InfoFFMPEG command: {' '.join(command)}")
-      process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-      stdout, stderr = process.communicate()
-
-      # Decode stderr to a string
-      try:
-        ffmpeg_out = stderr.decode('utf-8', errors='replace')
-      except UnicodeDecodeError:
-        ffmpeg_out = stderr.decode('cp1251', errors='replace')
-      except Exception as e:
-        logging.error(f"Error decoding GetMp3InfoFFMPEG command: {e}")
-        raise e
-      # end try
-
-      #  Example: "Duration: 00:01:25.49, start: 0.000000, bitrate: 69 kb/s"
-      match = re.search(r"Duration: (\d+):(\d+):(\d+)\.\d+, start: \d+\.\d+, bitrate: (\d+) kb\/s", ffmpeg_out)
-      if match:
-        hours, minutes, seconds, bitrate_kbps = match.groups()
-        total_seconds = int(hours)*60*60 + int(minutes)*60 + int(seconds)
-        return int(bitrate_kbps), total_seconds, True
-      else:
-        logging.error(f"Error parsing ffmpeg output: {ffmpeg_out}")
-        return None, None, False
-
+      tag = TinyTag.get(src_file_path)
+      total_seconds = int(tag.duration)  # audio duration in seconds as float
+      bitrate_kbps = int(tag.bitrate)    # bitrate in kBits/s as float
+      bitrate_kbps = int(tag.bitrate)    # bitrate in kBits/s as float
+      if bitrate_kbps == 0:
+        bitrate_kbps = DFLT_BITRATE_KB
     except Exception as e:
-      logging.exception(f"Error getting MP3 info for {src_file_path}: {e}")
+      logging.error(f"Error getting Tag info from {src_file_path}: {e}")
       return None, None, False
+
+    return bitrate_kbps, total_seconds, True
 
 
   #############################################################################
@@ -341,7 +325,9 @@ class MP3Processor:
     """Generates the FFMPEG command with tempo and optional compression."""
     # Convert paths to string and handle potential encoding issues
     src_file_path = str(src_file_path)
-    dst_file_path = str(dst_file_path)
+    # Any audio file will be converted to mp3, since we are using libmp3lame codec
+    base, ext = os.path.splitext(str(dst_file_path))
+    dst_file_path = base + ".mp3"
 
     ffmpeg_command = [
       str(self.ffmpeg_path.get()),
@@ -372,7 +358,7 @@ class MP3Processor:
 
   #############################################################################
   def monitor_progress(self, process, progress_bar, dst_est_sz_kbt, relative_path):
-    """Monitors FFMPEG progress for each mp3 file and updates the progress bar."""
+    """Monitors FFMPEG progress for each audio file and updates the progress bar."""
     q = queue.Queue()
 
     def read_stderr(p, q):
@@ -479,7 +465,7 @@ class MP3Processor:
 
   #############################################################################
   def process_file(self, src_file_path, relative_path, progress_bar):
-    """Processes a single MP3 file, handling potential overwrites."""
+    """Processes a single audio file, handling potential overwrites."""
     if relative_path in self.processed_files_set:
       return  # Skip if already processed
 
@@ -511,7 +497,7 @@ class MP3Processor:
         text=True,  # Use binary mode
         bufsize=1    # Line buffered
       )
-      # Monitor and update each mp3 file processing progress
+      # Monitor and update each audio file processing progress
       self.monitor_progress(process, progress_bar, dst_est_sz_kbt, relative_path)
       self.master.update_idletasks()
 
@@ -525,8 +511,8 @@ class MP3Processor:
 
 
   #############################################################################
-  def queue_mp3_files(self):
-    """Find, count, queue MP3 files, and pre-calculate output sizes."""
+  def queue_audio_files(self):
+    """Find, count, queue audio files, and pre-calculate output sizes."""
     src_dir = self.src_dir.get()
     self.total_files = 0
     self.queue = queue.Queue()
@@ -538,21 +524,21 @@ class MP3Processor:
 
     for root, _, files in os.walk(src_dir):
       for file in files:
-        if file.lower().endswith(".mp3"):
+        if file.lower().endswith(('.mp3', '.m4a', 'm4b', '.wav', '.ogg', '.flac')):
           full_path = os.path.join(root, file)
           relative_path = os.path.relpath(full_path, src_dir)
           self.queue.put((full_path, relative_path))
           self.total_files += 1
           self.total_src_sz += os.path.getsize(full_path)
 
-          # Get MP3 info and calculate size only if not skipping
+          # Get audio file metadata and calculate size only if not skipping
           overwrite_option = self.overwrite_options.get()
           dst_file_path = os.path.join(self.dst_dir.get(), relative_path)
           if os.path.exists(dst_file_path) and overwrite_option == "Skip existing files":
             self.skipped_files += 1
             self.file_info[relative_path] = {"dst_bitrate": 0, "duration": 0, "dst_est_sz_kbt": 0}
           else:
-            src_bitrate, duration, success = self.get_mp3_info(self.ffmpeg_path.get(), full_path)
+            src_bitrate, duration, success = self.get_metadata_info(self.ffmpeg_path.get(), full_path)
             if success:
               # In FFMPEG fixed bitrate (-b:a 64k) doesn't work in combination wtih Quality Setting for VBR (-q:a 7)
               # According to GPT for VBR (-q:a 7) has ~100K average bitrate. In practise it is closer to 55K.
@@ -564,7 +550,7 @@ class MP3Processor:
               logging.debug(f"{relative_path}: dst_est_sz_kbt={dst_est_sz_kbt}")
               self.total_dst_sz_kb += dst_est_sz_kbt
             else:
-              logging.error(f"Could not get MP3 info for {full_path}")
+              logging.error(f"Could not get audio file metadata for {full_path}")
               self.error_files += 1
 
     logging.debug(f"total_dst_sz_kb={self.total_dst_sz_kb}")
@@ -652,7 +638,7 @@ class MP3Processor:
 
   #############################################################################
   def start_processing(self):
-    """Starts the MP3 processing."""
+    """Starts the audio processing."""
     if not self.validate_tempo():
       return
 
@@ -666,18 +652,18 @@ class MP3Processor:
     self.skipped_files = 0
     self.processed_files_set.clear()
 
-    # Find, count and queue for processing all mp3 files
-    self.queue_mp3_files()
-    # Check, if there are no mp3 files to process
-    if self.total_files == 0 or self.total_dst_sz_kb == 0:
-      self.finish_processing(False)
-      return
-
     # Remove existing progress bars, before creating new ones
     for progress_bar in self.progress_bars:
       progress_bar.grid_forget()
       progress_bar.destroy()
     self.progress_bars.clear()
+
+    # Find, count and queue for processing all audio files
+    self.queue_audio_files()
+    # Check, if there are no audio files to process
+    if self.total_files == 0 or self.total_dst_sz_kb == 0:
+      self.finish_processing(False)
+      return
 
     # Create progress bars dynamically
     n_progress_bars = min(self.total_files, self.n_threads.get())
@@ -818,5 +804,5 @@ class MP3Processor:
 ###############################################################################
 if __name__ == "__main__":
   root = tk.Tk()
-  app = MP3Processor(root)
+  app = AudioProcessor(root)
   root.mainloop()
