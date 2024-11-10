@@ -136,13 +136,16 @@ class MP3Processor:
     # Bind the save_config method to the window close event.
     self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-    self.setup_logging('DEBUG')  # 'INFO' or 'DEBUG' for more detailed logging
+    self.setup_logging('INFO')  # 'INFO' or 'DEBUG' for more detailed logging
     logging.info("MP3Processor initialized")
 
     self.status_update_queue = queue.Queue()
     self.status_update_thread = threading.Thread(target=self.process_status_updates, daemon=True) # Explicitly set daemon
     self.status_update_thread.start()
     logging.info("Status update thread started.")
+
+    # Using this flag for more gracefull shutdown, if closing application while processsing files is active
+    self.is_shutting_down = False
 
 
   #############################################################################
@@ -438,24 +441,40 @@ class MP3Processor:
   #############################################################################
   def update_total_progress(self):
     """Updates the total progress bar based on cumulative processed size."""
-    with self.processed_sz_arr_lock:
-      total_processed_size_kb = sum(self.processed_sz_arr.values())
-    total_progress_percentage = int((total_processed_size_kb / self.total_dst_sz_kb) * 100) if self.total_dst_sz_kb > 0 else 0
-    # We're using DFLT_BITRATE_KB as upper limit, but it can make the dst_est_sz_kbt < total_processed_size_kb
-    # Leading to progress bars >100%. Thus will manually limit any values >=100% to 100%
-    total_progress_percentage = min(100, total_progress_percentage)
-    logging.debug(f"ttl_prcssd_sz_kb={total_processed_size_kb}, ttl_sz={self.total_dst_sz_kb}, prgrss={total_progress_percentage}")
-    total_progress_message = f"{total_progress_percentage}%  {self.processed_files}/{self.total_files}"
-    self.total_progress.set_progress(total_progress_percentage)
-    self.total_progress.set_display_text(total_progress_message)
+    if self.is_shutting_down:
+      return
 
-    # When all files processed, set progress to 100% (might be a bit smaller/larger otherwise)
-    if self.processed_files == self.total_files:
-      total_progress_percentage = 100
+    try:
+      with self.processed_sz_arr_lock:
+        total_processed_size_kb = sum(self.processed_sz_arr.values())
+      total_progress_percentage = int((total_processed_size_kb / self.total_dst_sz_kb) * 100) if self.total_dst_sz_kb > 0 else 0
+      # We're using DFLT_BITRATE_KB as upper limit, but it can make the dst_est_sz_kbt < total_proce
+      # Leading to progress bars >100%. Thus will manually limit any values >=100% to 100%
+      total_progress_percentage = min(100, total_progress_percentage)
+      logging.debug(f"ttl_prcssd_sz_kb={total_processed_size_kb}, ttl_sz={self.total_dst_sz_kb}, prgrss={total_progress_percentage}")
       total_progress_message = f"{total_progress_percentage}%  {self.processed_files}/{self.total_files}"
-      self.total_progress.set_progress(total_progress_percentage)
-      self.total_progress.set_display_text(total_progress_message)
-      self.master.after(100, self.finish_processing)
+
+      # Wrap GUI updates in try-except
+      try:
+        self.total_progress.set_progress(total_progress_percentage)
+        self.total_progress.set_display_text(total_progress_message)
+      except tk.TclError:
+        logging.debug("GUI already closed, skipping progress update")
+        return
+
+      # When all files processed, set progress to 100% (might be a bit smaller/larger otherwise)
+      if self.processed_files == self.total_files:
+        total_progress_percentage = 100
+        total_progress_message = f"{total_progress_percentage}%  {self.processed_files}/{self.total_files}"
+        try:
+          self.total_progress.set_progress(total_progress_percentage)
+          self.total_progress.set_display_text(total_progress_message)
+          self.master.after(100, self.finish_processing)
+        except tk.TclError:
+          logging.debug("GUI already closed, skipping final progress update")
+
+    except Exception as e:
+      logging.error(f"Error updating total progress: {e}")
 
 
   #############################################################################
@@ -560,7 +579,7 @@ class MP3Processor:
     num_threads = min(self.n_threads.get(), self.total_files)
     self.active_threads = num_threads
     for i in range(num_threads):
-      thread = threading.Thread(target=self.worker, args=(i,))
+      thread = threading.Thread(target=self.worker, args=(i,), daemon=True)  # Set daemon=True
       self.threads.append(thread)
       thread.start()
 
@@ -568,32 +587,61 @@ class MP3Processor:
   #############################################################################
   def worker(self, thread_index):
     """Worker function for each thread, processing files from the queue."""
-    while True:
+    while not self.is_shutting_down:
       try:
         file_path, relative_path = self.queue.get(timeout=1)
+        if file_path is None:  # Check for sentinel value
+          break
         self.process_file(file_path, relative_path, self.progress_bars[thread_index])
         self.queue.task_done()
       except queue.Empty:
         break
       except Exception as e:
-        msg = f"Error in thread {thread_index + 1}: {e}"
-        self.status_update_queue.put(msg)
-        logging.exception(msg)
+        if not self.is_shutting_down:  # Only log if not shutting down
+          msg = f"Error in thread {thread_index + 1}: {e}"
+          self.status_update_queue.put(msg)
+          logging.exception(msg)
         break
+
     self.active_threads -= 1
-    if self.active_threads == 0:
-      self.master.after(100, self.finish_processing)
+    if self.active_threads == 0 and not self.is_shutting_down:
+      try:
+        self.master.after(100, self.finish_processing)
+      except tk.TclError:
+        logging.debug("GUI already closed, skipping finish_processing call")
 
 
   #############################################################################
   def on_closing(self):
     """Handles window closing event, saving configuration."""
     logging.info("Closing application, waiting for threads...")
+    self.is_shutting_down = True  # Set shutdown flag
     self.save_config()
 
-    # Attempt to gracefully stop the status update thread
-    self.status_update_queue.put(None) #Signal to the thread to exit
+    # Signal all threads to stop
+    for _ in range(len(self.threads)):
+      self.queue.put((None, None))  # Add sentinel values
 
+    # Wait for threads to finish with timeout
+    for thread in self.threads:
+      thread.join(timeout=2)
+
+    # Clear the queue to prevent blocking
+    while not self.queue.empty():
+      try:
+        self.queue.get_nowait()
+      except queue.Empty:
+        break
+
+    # Clear the status update queue
+    while not self.status_update_queue.empty():
+      try:
+        self.status_update_queue.get_nowait()
+      except queue.Empty:
+        break
+
+    # Signal and wait for status update thread to stop
+    self.status_update_queue.put(None)
     try:
       self.status_update_thread.join(timeout=2)
     except Exception as e:
@@ -753,12 +801,14 @@ class MP3Processor:
     """Processes status updates from the queue."""
     while True:
       try:
-        message = self.status_update_queue.get(timeout=GUI_TIMEOUT)  # Short timeout to avoid blocking indefinitely
+        message = self.status_update_queue.get(timeout=0.1)  # Short timeout to avoid blocking indefinitely
         if message is None: # Check for exit signal
           break
         self.update_status(message)
         self.status_update_queue.task_done()
       except queue.Empty:
+        if self.is_shutting_down:  # Check shutdown flag
+          break
         continue
       except Exception as e:
         logging.exception("Error in status update thread: %s", e)
