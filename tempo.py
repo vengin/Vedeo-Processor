@@ -16,10 +16,14 @@ import re
 
 # Default values for the application
 DFLT_FFMPEG_PATH = "d:/PF/_Tools/ffmpeg/bin/ffmpeg.exe"  # Change this if your ffmpeg path is different.
+SRC_DIR_DFLT = ""
+DST_DIR_DFLT = ""
 DFLT_TEMPO = 1.8
 DFLT_N_THREADS = 4
-DFLT_N_THREADS_MAX = 32
+DFLT_N_THREADS_MAX = 16
 DFLT_CONFIG_FILE = "tempo_config.ini"
+DFLT_OVERWRITE_OPTION = "Skip existing files"  # Skip by default
+DFLT_USE_COMPRESSION_OPTION = False  # No compression by default
 GUI_TIMEOUT = 0.3
 DFLT_BITRATE_KB = 55 # i.e. 64K
 
@@ -77,38 +81,23 @@ class AudioProcessor:
     self.master = master
     master.title("Audio Tempo Changer")
 
-    # Default values (used only if config file loading fails)
-    self.ffmpeg_path_default = DFLT_FFMPEG_PATH
-    self.tempo_default = DFLT_TEMPO
-    self.src_dir_default = ""
-    self.dst_dir_default = ""
-    self.n_threads_default = DFLT_N_THREADS
-    self.overwrite_options = tk.StringVar(value="Skip existing files")
-    self.use_compression_var = tk.BooleanVar(value=False)
-
-    # Pre-define GUI element variables (to avoid linter warnings)
+    # Pre-define elements\variables (to avoid linter warnings and errors)
     self.run_button = None
-
-    # Load application configuration
-    self.config = configparser.ConfigParser()
-    self.load_config()
+    self.overwrite_options = tk.StringVar(value=DFLT_OVERWRITE_OPTION)
+    self.use_compression_var = tk.BooleanVar(value=DFLT_USE_COMPRESSION_OPTION)
 
     # Initialize GUI variables as empty
     self.ffmpeg_path = tk.StringVar()
     self.tempo = tk.DoubleVar()
     self.src_dir = tk.StringVar()
     self.dst_dir = tk.StringVar()
-    config_n_threads = self.config.getint('DEFAULT', 'n_threads', fallback=self.n_threads_default)
-    self.n_threads = tk.IntVar(value=max(1, min(DFLT_N_THREADS_MAX, config_n_threads)))  # Ensures value is between 1 and 16
+    self.n_threads = tk.IntVar()
 
-    # Set the values using the loaded configuration or defaults
-    self.ffmpeg_path.set(self.config['DEFAULT'].get('ffmpeg_path', self.ffmpeg_path_default))
-    self.tempo.set(float(self.config['DEFAULT'].get('tempo', str(self.tempo_default))))
-    self.src_dir.set(self.config['DEFAULT'].get('src_dir', self.src_dir_default))
-    self.dst_dir.set(self.config['DEFAULT'].get('dst_dir', self.dst_dir_default))
-    self.n_threads.set(int(self.config['DEFAULT'].get('n_threads', str(self.n_threads_default))))
-    self.overwrite_options.set(self.config['DEFAULT'].get('overwrite_option', "Skip existing files"))  # Load overwrite option
+    # Load application configuration
+    self.config = configparser.ConfigParser()
+    self.load_config()
 
+    # Init variables
     self.progress_bars = []
     self.active_threads = 0
     self.total_files = 0
@@ -158,22 +147,24 @@ class AudioProcessor:
       self.config['DEFAULT'] = {
         'ffmpeg_path': DFLT_FFMPEG_PATH,
         'tempo': str(DFLT_TEMPO),
-        'src_dir': '',
-        'dst_dir': '',
+        'src_dir': SRC_DIR_DFLT,
+        'dst_dir': DST_DIR_DFLT,
         'n_threads': str(DFLT_N_THREADS),
-        'overwrite_option': 'Skip existing files',  # Skip by default
-        'use_compression': 'false',  # No compression by default
+        'overwrite_option': DFLT_OVERWRITE_OPTION,  # Skip by default
+        'use_compression': str(DFLT_USE_COMPRESSION_OPTION),
       }
     else:
       try:
-        self.config['DEFAULT']['tempo'] = self.config['DEFAULT']['tempo'].split(';')[0].strip()
-        # Load overwrite setting
-        self.overwrite_options.set(self.config['DEFAULT'].get('overwrite_option', 'Skip existing files'))
-        # Load compression setting
-        self.use_compression_var.set(self.config['DEFAULT'].get('use_compression', 'false').lower() == 'true')
-      except (KeyError, IndexError, ValueError):
-        messagebox.showwarning("Config Error", "Tempo value missing or malformed. Using default.")
-        self.config['DEFAULT']['tempo'] = str(DFLT_TEMPO)
+        # Set the values using the loaded configuration or defaults
+        self.ffmpeg_path.set(self.config['DEFAULT'].get('ffmpeg_path', DFLT_FFMPEG_PATH))
+        self.tempo.set(float(self.config['DEFAULT'].get('tempo', str(DFLT_TEMPO))))
+        self.src_dir.set(self.config['DEFAULT'].get('src_dir', SRC_DIR_DFLT))
+        self.dst_dir.set(self.config['DEFAULT'].get('dst_dir', DST_DIR_DFLT))
+        self.n_threads.set(int(self.config['DEFAULT'].get('n_threads', str(DFLT_N_THREADS))))
+        self.use_compression_var.set(self.config['DEFAULT'].get('use_compression', DFLT_USE_COMPRESSION_OPTION).lower())
+        self.overwrite_options.set(self.config['DEFAULT'].get('overwrite_option', DFLT_OVERWRITE_OPTION))
+      except Exception as e:
+        messagebox.showerror("Config Error", f"Could not load config file: {e}")
 
 
   #############################################################################
@@ -182,7 +173,7 @@ class AudioProcessor:
     if self.validate_tempo():
       self.config['DEFAULT']['tempo'] = str(self.tempo.get())
     else:
-      self.config['DEFAULT']['tempo'] = str(self.tempo_default)
+      self.config['DEFAULT']['tempo'] = str(DFLT_TEMPO)
 
     self.config['DEFAULT']['n_threads'] = str(self.n_threads.get())
     self.config['DEFAULT']['ffmpeg_path'] = self.ffmpeg_path.get()
@@ -194,7 +185,7 @@ class AudioProcessor:
       with open(DFLT_CONFIG_FILE, 'w') as configfile:
         self.config.write(configfile)
     except Exception as e:
-      messagebox.showerror("Error", f"Could not save config file: {e}")
+      messagebox.showerror("Config Error", f"Could not save config file: {e}")
 
 
   #############################################################################
@@ -202,8 +193,9 @@ class AudioProcessor:
     """Creates and arranges GUI elements."""
     # Tempo
     ttk.Label(self.master, text="Tempo:").grid(row=0, column=0, sticky=tk.W, padx=5)
-    ttk.Entry(self.master, textvariable=self.tempo, width=5).grid(row=0, column=1, sticky=tk.W)
-    ttk.Entry(self.master, textvariable=self.tempo, width=5).bind('<FocusOut>', self.on_tempo_focusout)
+    tempo_entry = ttk.Entry(self.master, textvariable=self.tempo, width=5)
+    tempo_entry.grid(row=0, column=1, sticky=tk.W)
+    tempo_entry.bind('<FocusOut>', self.on_tempo_focusout)
 
     # Source Directory Path
     ttk.Button(self.master, text="SrcDir", command=self.browse_src_dir).grid(row=1, column=0)
@@ -780,7 +772,7 @@ class AudioProcessor:
   def on_tempo_focusout(self, event):
     """Handles tempo entry focus out event, validating the input."""
     if not self.validate_tempo():
-      self.tempo.set(self.tempo_default)  # Reset to default if invalid
+      self.tempo.set(DFLT_TEMPO)  # Reset to default if invalid
 
 
   #############################################################################
