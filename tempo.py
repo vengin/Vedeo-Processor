@@ -19,7 +19,7 @@ DFLT_TEMPO = 1.8
 DFLT_N_THREADS = 4
 DFLT_CONFIG_FILE = "tempo_config.ini"
 GUI_TIMEOUT = 0.1
-DFLT_BITRATE_KB = 48 # i.e. 48K
+DFLT_BITRATE_KB = 64 # i.e. 64K
 
 
 #############################################################################
@@ -410,7 +410,7 @@ class MP3Processor:
           match = re.search(r"size=\s*(\d+)\w+", line)
           if match:
             processed_sz_kb = int(match.group(1))  # in KB
-            progress = min(100, (processed_sz_kb / dst_est_sz_kbt) * 100)
+            progress = min(100, (processed_sz_kb / dst_est_sz_kbt) * 100) # Do not exceed 100%
             progress_bar.set_progress(progress)
             self.master.update_idletasks()
 
@@ -440,6 +440,9 @@ class MP3Processor:
     with self.processed_sz_arr_lock:
       total_processed_size_kb = sum(self.processed_sz_arr.values())
     total_progress_percentage = int((total_processed_size_kb / self.total_dst_sz_kb) * 100) if self.total_dst_sz_kb > 0 else 0
+    # We're using DFLT_BITRATE_KB=64K as upper limit, but it can make the dst_est_sz_kbt < total_processed_size_kb
+    # Leading to progress bars >100%. Thus will manually limit any values >=100% to 100%
+    total_progress_percentage = min(100, total_progress_percentage)
     logging.debug(f"ttl_prcssd_sz_kb={total_processed_size_kb}, ttl_sz={self.total_dst_sz_kb}, prgrss={total_progress_percentage}")
     total_progress_message = f"{self.processed_files}/{self.total_files} {total_progress_percentage}%"
     self.total_progress.set_progress(total_progress_percentage)
@@ -531,6 +534,10 @@ class MP3Processor:
           else:
             src_bitrate, duration, success = self.get_mp3_info(self.ffmpeg_path.get(), full_path)
             if success:
+              # In FFMPEG fixed bitrate (-b:a 64k) doesn't work in combination wtih Quality Setting for VBR (-q:a 7)
+              # According to GPT for VBR (-q:a 7) has ~100K average bitrate. In practise it is closer to 50-65K.
+              # We'll use DFLT_BITRATE_KB=64K as upper limit, but it can make the dst_est_sz_kbt < total_processed_size_kb
+              # Leading to progress bars >100%. Thus will manually limit any values >=100% to 100%
               dst_bitrate = min(DFLT_BITRATE_KB, src_bitrate)
               dst_est_sz_kbt = int(dst_bitrate * duration / (8 * self.tempo.get())) # in KB
               self.file_info[relative_path] = {"dst_bitrate": dst_bitrate, "duration": duration, "dst_est_sz_kbt": dst_est_sz_kbt}
