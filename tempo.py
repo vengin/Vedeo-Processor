@@ -18,6 +18,7 @@ import re
 DFLT_FFMPEG_PATH = "d:/PF/_Tools/ffmpeg/bin/ffmpeg.exe"  # Change this if your ffmpeg path is different.
 DFLT_TEMPO = 1.8
 DFLT_N_THREADS = 4
+DFLT_N_THREADS_MAX = 32
 DFLT_CONFIG_FILE = "tempo_config.ini"
 GUI_TIMEOUT = 0.3
 DFLT_BITRATE_KB = 55 # i.e. 64K
@@ -98,7 +99,7 @@ class AudioProcessor:
     self.src_dir = tk.StringVar()
     self.dst_dir = tk.StringVar()
     config_n_threads = self.config.getint('DEFAULT', 'n_threads', fallback=self.n_threads_default)
-    self.n_threads = tk.IntVar(value=max(1, min(16, config_n_threads)))  # Ensures value is between 1 and 16
+    self.n_threads = tk.IntVar(value=max(1, min(DFLT_N_THREADS_MAX, config_n_threads)))  # Ensures value is between 1 and 16
 
     # Set the values using the loaded configuration or defaults
     self.ffmpeg_path.set(self.config['DEFAULT'].get('ffmpeg_path', self.ffmpeg_path_default))
@@ -212,9 +213,9 @@ class AudioProcessor:
     ttk.Button(self.master, text="DstDir", command=self.browse_dst_dir).grid(row=2, column=0)
     ttk.Entry(self.master, textvariable=self.dst_dir, width=200).grid(row=2, column=1, sticky=tk.W)
 
-    # Number of threads 1-16
+    # Number of threads 1-DFLT_N_THREADS_MAX
     ttk.Label(self.master, text="Number of threads:").grid(row=3, column=0, sticky=tk.W, padx=5)
-    n_thread_values = list(range(1, 17))  # Creates a list from 1 to 16
+    n_thread_values = list(range(1, DFLT_N_THREADS_MAX+1))  # Creates a list from 1 to DFLT_N_THREADS_MAX
     self.n_threads_combo = ttk.Combobox(self.master, textvariable=self.n_threads, values=n_thread_values, width=3, state="readonly")
     self.n_threads_combo.grid(row=3, column=1, sticky=tk.W)
 
