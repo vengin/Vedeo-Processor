@@ -272,8 +272,6 @@ class MP3Processor:
     try:
       command = [ffmpeg_path, "-i", src_file_path, "-hide_banner"]
       logging.debug(f"GetMp3InfoFFMPEG command: {' '.join(command)}")
-#      process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8')
-#      process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='cp1251')
       process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
       stdout, stderr = process.communicate()
 
@@ -287,14 +285,11 @@ class MP3Processor:
         raise e
       # end try
 
-#      print(ffmpeg_out)
-
       #  Example: "Duration: 00:01:25.49, start: 0.000000, bitrate: 69 kb/s"
       match = re.search(r"Duration: \d+:(\d+):(\d+)\.\d+, start: \d+\.\d+, bitrate: (\d+) kb\/s", ffmpeg_out)
       if match:
         minutes, seconds, bitrate_kbps = match.groups()
         total_seconds = int(minutes) * 60 + int(seconds)
-        print(f"ttl_sec={total_seconds}, BR={bitrate_kbps}")
         return int(bitrate_kbps), total_seconds, True
       else:
         logging.error(f"Error parsing ffmpeg output: {ffmpeg_out}")
@@ -327,7 +322,6 @@ class MP3Processor:
         logging.debug(msg)
         return dst_file_path
       elif overwrite_option == "Skip existing files":  # Skip processing
-#        self.skipped_files += 1
         msg = f"Skipping: {relative_path}"
         self.status_update_queue.put(msg)  # Use queue for status updates
         logging.debug(msg)
@@ -414,11 +408,9 @@ class MP3Processor:
           if line is None:
             break
           match = re.search(r"size=\s*(\d+)\w+", line)
-          print(line)
           if match:
             processed_sz_kb = int(match.group(1))  # in KB
             progress = min(100, (processed_sz_kb / dst_est_sz_kbt) * 100)
-            print(f"processed_sz_kb={processed_sz_kb}, dst_est_sz_kbt={dst_est_sz_kbt}")
             progress_bar.set_progress(progress)
             self.master.update_idletasks()
 
@@ -506,7 +498,6 @@ class MP3Processor:
       self.status_update_queue.put(msg)
       self.error_files += 1
     finally:
-#      self.processed_files += 1
       self.update_total_progress() # Update total progress after each file
 
 
@@ -542,7 +533,6 @@ class MP3Processor:
             if success:
               dst_bitrate = min(DFLT_BITRATE_KB, src_bitrate)
               dst_est_sz_kbt = int(dst_bitrate * duration / (8 * self.tempo.get())) # in KB
-              print(f"{dst_file_path}: dst_est_sz_kbt={dst_est_sz_kbt}")
               self.file_info[relative_path] = {"dst_bitrate": dst_bitrate, "duration": duration, "dst_est_sz_kbt": dst_est_sz_kbt}
               self.total_dst_sz_kb += dst_est_sz_kbt
             else:
