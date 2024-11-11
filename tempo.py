@@ -16,8 +16,8 @@ import re
 
 # Default values for the application
 DFLT_FFMPEG_PATH = "d:/PF/_Tools/ffmpeg/bin/ffmpeg.exe"  # Change this if your ffmpeg path is different.
-SRC_DIR_DFLT = ""
-DST_DIR_DFLT = ""
+DFLT_SRC_DIR = ""
+DFLT_DST_DIR = ""
 DFLT_TEMPO = 1.8
 DFLT_N_THREADS = 4
 DFLT_N_THREADS_MAX = 16
@@ -147,8 +147,8 @@ class AudioProcessor:
       self.config['DEFAULT'] = {
         'ffmpeg_path': DFLT_FFMPEG_PATH,
         'tempo': str(DFLT_TEMPO),
-        'src_dir': SRC_DIR_DFLT,
-        'dst_dir': DST_DIR_DFLT,
+        'src_dir': DFLT_SRC_DIR,
+        'dst_dir': DFLT_DST_DIR,
         'n_threads': str(DFLT_N_THREADS),
         'overwrite_option': DFLT_OVERWRITE_OPTION,  # Skip by default
         'use_compression': str(DFLT_USE_COMPRESSION_OPTION),
@@ -158,8 +158,8 @@ class AudioProcessor:
         # Set the values using the loaded configuration or defaults
         self.ffmpeg_path.set(self.config['DEFAULT'].get('ffmpeg_path', DFLT_FFMPEG_PATH))
         self.tempo.set(float(self.config['DEFAULT'].get('tempo', str(DFLT_TEMPO))))
-        self.src_dir.set(self.config['DEFAULT'].get('src_dir', SRC_DIR_DFLT))
-        self.dst_dir.set(self.config['DEFAULT'].get('dst_dir', DST_DIR_DFLT))
+        self.src_dir.set(self.config['DEFAULT'].get('src_dir', DFLT_SRC_DIR))
+        self.dst_dir.set(self.config['DEFAULT'].get('dst_dir', DFLT_DST_DIR))
         self.n_threads.set(int(self.config['DEFAULT'].get('n_threads', str(DFLT_N_THREADS))))
         self.use_compression_var.set(self.config['DEFAULT'].get('use_compression', DFLT_USE_COMPRESSION_OPTION).lower())
         self.overwrite_options.set(self.config['DEFAULT'].get('overwrite_option', DFLT_OVERWRITE_OPTION))
@@ -285,6 +285,9 @@ class AudioProcessor:
     """Handles overwrite logic based on user selection."""
     msg = ""
     overwrite_option = self.overwrite_options.get()
+    dst_relative_path_base, ext = os.path.splitext(relative_path)
+    dst_relative_path = dst_relative_path_base + '.mp3'
+    dst_file_path = os.path.join(self.dst_dir.get(), dst_relative_path)
     if os.path.exists(dst_file_path):
       if overwrite_option == "Overwrite existing files":  # Overwrite existing
         msg = f"Overwriting: {relative_path}"
@@ -443,11 +446,8 @@ class AudioProcessor:
 
       # When all files processed, set progress to 100% (might be a bit smaller/larger otherwise)
       if self.processed_files == self.total_files:
-        total_progress_percentage = 100
-        total_progress_message = f"{total_progress_percentage}%  {self.processed_files}/{self.total_files}"
+        total_progress_message = f"100%  {self.processed_files}/{self.total_files}"
         try:
-          self.total_progress.set_progress(total_progress_percentage)
-          self.total_progress.set_display_text(total_progress_message)
           self.master.after(100, self.finish_processing)
         except tk.TclError:
           logging.debug("GUI already closed, skipping final progress update")
@@ -459,6 +459,8 @@ class AudioProcessor:
   #############################################################################
   def process_file(self, src_file_path, relative_path, progress_bar):
     """Processes a single audio file, handling potential overwrites."""
+
+#    src_base, src_ext = os.path.splitext(relative_path)
     if relative_path in self.processed_files_set:
       return  # Skip if already processed
 
@@ -466,7 +468,9 @@ class AudioProcessor:
     try:
       dst_file_path = os.path.join(self.dst_dir.get(), relative_path)
       dst_file_path = self.handle_overwrite(dst_file_path, relative_path)
-      if dst_file_path is None:
+      if dst_file_path is None:  # Skip file
+        progress_bar.set_display_text(relative_path)
+        progress_bar.set_progress(100)
         return  # Do not process, if the file should be skipped
 
       os.makedirs(os.path.dirname(dst_file_path), exist_ok=True)
@@ -524,13 +528,16 @@ class AudioProcessor:
           self.total_files += 1
           self.total_src_sz += os.path.getsize(full_path)
 
-          # Get audio file metadata and calculate size only if not skipping
+          # Skip existing files
           overwrite_option = self.overwrite_options.get()
-          dst_file_path = os.path.join(self.dst_dir.get(), relative_path)
+          dst_relative_path_base, ext = os.path.splitext(relative_path)
+#          dst_relative_path = dst_relative_path_base + '.mp3'
+          dst_file_path = os.path.join(self.dst_dir.get(), dst_relative_path_base + '.mp3')
           if os.path.exists(dst_file_path) and overwrite_option == "Skip existing files":
             self.skipped_files += 1
             self.file_info[relative_path] = {"dst_bitrate": 0, "duration": 0, "dst_est_sz_kbt": 0}
           else:
+            # Get audio file metadata and calculate size
             src_bitrate, duration, success = self.get_metadata_info(self.ffmpeg_path.get(), full_path)
             if success:
               # In FFMPEG fixed bitrate (-b:a 64k) doesn't work in combination wtih Quality Setting for VBR (-q:a 7)
@@ -568,7 +575,7 @@ class AudioProcessor:
     """Worker function for each thread, processing files from the queue."""
     while not self.is_shutting_down:
       try:
-        file_path, relative_path = self.queue.get(timeout=1)
+        file_path, relative_path = self.queue.get(timeout=0.1)
         if file_path is None:  # Check for sentinel value
           break
         self.process_file(file_path, relative_path, self.progress_bars[thread_index])
@@ -654,7 +661,7 @@ class AudioProcessor:
     # Find, count and queue for processing all audio files
     self.queue_audio_files()
     # Check, if there are no audio files to process
-    if self.total_files == 0 or self.total_dst_sz_kb == 0:
+    if self.total_files == 0:
       self.finish_processing(False)
       return
 
@@ -695,40 +702,49 @@ class AudioProcessor:
     """Handles processing completion."""
     if self.processing_complete == False:
       self.processing_complete = True
+      #
+      processing_time_str = ""
       if (calc_time == True):
         end_time = time.time()
         processing_time = end_time - self.start_time
+        # Convert time in seconds to "XX min YY sec" string, e.g. 95 sec = "1 min 35 sec"
+        if processing_time < 60:
+          processing_time_str += f"{processing_time:.2f} sec"
+        else:
+          processing_time_str += f"{int(processing_time/60)} min {int(processing_time%60)} sec"
       else:
         processing_time = 0
-      if self.error_files == 0:
-        total_dst_sz_mb = self.total_dst_sz_kb / 1024
-        total_src_sz_mb = self.total_src_sz / (1024 * 1024)
-        # Add the number of processed files
-        msg = f"{self.processed_files} files processed"
-        # Add the number of skipped files
-        if self.skipped_files:
-          msg += f" ({self.skipped_files} skipped)"
-        # Add size
-        msg += f", {total_dst_sz_mb:.2f} MB in "
-        # Add time
-        if processing_time < 60:
-          msg += f"{processing_time:.2f} sec"
-        else:
-          msg += f"{int(processing_time/60)} min {int(processing_time%60)} sec"
-        # Add compression ratio
-        if total_dst_sz_mb:
-          msg += f". Compression ratio {(total_src_sz_mb / total_dst_sz_mb):.2f}"
-        self.update_status("\n" + msg)
-        logging.info(msg)
-      else:
-        msg = f"\nProcessed / Total (Errors): {self.processed_files} / {self.total_files} ({self.error_files}) files in {processing_time:.2f} seconds"
-        self.update_status(msg)
-        logging.info(msg)
+
+      # Example msg: "3 Files Total: 1 processed, 1 Skipped, 1 Error. Compression ratio  3.95"
+      # Add Total and Processed files
+      msg = f"{self.total_files} Files Total: {self.processed_files} Processed"
+      # Add non-zero Skipped files
+      if self.skipped_files:
+        msg += f", {self.skipped_files} Skipped"
+      # Add non-zero Error files
+      if self.error_files:
+        msg += f", {self.error_files} Errors"
+      # Add Processing time
+      if (processing_time != 0) and (self.skipped_files < self.total_files):
+        msg += f" in {processing_time_str}."
+      # Add Compression Ratio
+      total_dst_sz_mb = self.total_dst_sz_kb / 1024
+      total_src_sz_mb = self.total_src_sz / (1024 * 1024)
+      if total_dst_sz_mb:
+        msg += f" Compression ratio {(total_src_sz_mb / total_dst_sz_mb):.2f}."
+
+      # Display message
+      self.update_status("\n" + msg)
+      logging.info(msg)
       self.run_button.config(state=tk.NORMAL)
+
+      # 100%
+      total_progress_message = f"100%  {self.processed_files+self.skipped_files}/{self.total_files}"
+      self.total_progress.set_progress(100)
+      self.total_progress.set_display_text(total_progress_message)
 
       # Clear the threads list
       self.threads.clear()
-
       self.master.update_idletasks()
 
 
