@@ -34,27 +34,50 @@ class CustomProgressBar(tk.Canvas):
   Custom progress bar class for displaying processing progress.
   Inherits from tkinter Canvas widget.
   """
-  def __init__(self, master, *args, **kwargs):
+  def __init__(self, master, use_bold_font=False, *args, **kwargs):
     super().__init__(master, *args, **kwargs)
     self.progress_var = tk.DoubleVar()
     self.filename_var = tk.StringVar()
-    self.progress_rect = None
-    self.text_id = None
-    self.outline_rect = None
+
+    # Set bald font based on parameter
+    self.text_font = ('TkDefaultFont', 9, 'bold') if use_bold_font else ('TkDefaultFont', 9)
+
+    # Bind configure event to handle resizing
+    self.bind("<Configure>", self.draw_progress_bar)
+
+    # Initial draw
     self.draw_progress_bar()
 
 
   #############################################################################
-  def draw_progress_bar(self):
+  def draw_progress_bar(self, event=None):
     """Redraws the progress bar based on current progress and filename."""
-    self.delete("all")
+    self.delete("all")  # Clear canvas
+
+    # Get current dimensions
     width = self.winfo_width()
     height = self.winfo_height()
+
+    # Calculate progress width
     progress = self.progress_var.get()
-    fill_width = (width - 4) * (progress / 100)
-    self.create_rectangle(2, 2, width - 2, height - 2, outline="black")  # Outline
-    self.create_rectangle(2, 2, fill_width + 2, height - 2, fill="#A8D8A8")  # Filled progress
-    self.create_text(width / 2, height / 2, text=self.filename_var.get(), fill="black")  # Filename
+    fill_width = int((width - 5) * (progress / 100))  # Adjusted for border
+
+    # Draw border rectangle first
+#    self.create_rectangle(2, 2, width-2, height-2,  outline="black", width=1)
+    self.create_rectangle(2, 2, width-2, height-2,  outline="black")
+
+    # Draw progress fill inside the border
+    if fill_width > 0:
+      self.create_rectangle(2, 2, fill_width+2, height-2, fill="#A8D8A8")#, outline="")
+
+    # Draw centered text
+    self.create_text(
+      width / 2, height / 2,
+      text=self.filename_var.get(),
+      anchor="center",
+      fill="black",
+      font=self.text_font  # Bald font (optionally)
+    )
 
 
   #############################################################################
@@ -99,6 +122,7 @@ class AudioProcessor:
 
     # Init variables
     self.progress_bars = []
+    self.progress_bars_idx = []
     self.active_threads = 0
     self.total_files = 0
     self.processed_files = 0
@@ -241,11 +265,6 @@ class AudioProcessor:
     # Configure the status_text to use the scrollbar
     self.status_text.config(yscrollcommand=scrollbar.set)
 
-    # Create overall (total) progress bar
-    ttk.Label(self.master, text="Overall progress:").grid(row=8, column=0, sticky=tk.W, padx=5)
-    self.total_progress = CustomProgressBar(self.master, width=1202, height=25)
-    self.total_progress.grid(row=8, column=1, pady=10)  # Place it above progress bars for processed files
-
 
   #############################################################################
   def browse_src_dir(self):
@@ -325,10 +344,11 @@ class AudioProcessor:
     base, ext = os.path.splitext(str(dst_file_path))
     dst_file_path = base + ".mp3"
 
+    # Cmd example: ffmpeg.exe -i i.mp3 -codec:a libmp3lame -q:a 7 -ar 22050 -filter:a atempo=1.8 -vn -hide_banner -loglevel error -stats o.mp3 -y
     ffmpeg_command = [
       str(self.ffmpeg_path.get()),
       "-i", src_file_path,
-      "-filter:a", f"atempo={self.tempo.get()}",  # audio filter
+      "-filter:a", f"atempo={self.tempo.get()}",  # tempo audio filter
       "-vn",  # Disable video stream
 #      "-b:a", f"{bit_rate}k",  # Fixed Bit-Rate
       dst_file_path,
@@ -338,7 +358,8 @@ class AudioProcessor:
       "-loglevel", "error",
       "-stats",
     ]
-
+    # Compression cmd example: "codec:a libmp3lame -q:a 7 -ar 22050"
+    # Full cmd example: ffmpeg.exe -i i.mp3 -codec:a libmp3lame -q:a 7 -ar 22050 -filter:a atempo=1.8 -vn -hide_banner -loglevel error -stats o.mp3 -y
     if self.use_compression_var.get():
       ffmpeg_compression_params = [
         "-codec:a", "libmp3lame",  # LAME (Lame Ain't an MP3 Encoder) MP3 encoder wrapper
@@ -460,7 +481,6 @@ class AudioProcessor:
   def process_file(self, src_file_path, relative_path, progress_bar):
     """Processes a single audio file, handling potential overwrites."""
 
-#    src_base, src_ext = os.path.splitext(relative_path)
     if relative_path in self.processed_files_set:
       return  # Skip if already processed
 
@@ -531,7 +551,6 @@ class AudioProcessor:
           # Skip existing files
           overwrite_option = self.overwrite_options.get()
           dst_relative_path_base, ext = os.path.splitext(relative_path)
-#          dst_relative_path = dst_relative_path_base + '.mp3'
           dst_file_path = os.path.join(self.dst_dir.get(), dst_relative_path_base + '.mp3')
           if os.path.exists(dst_file_path) and overwrite_option == "Skip existing files":
             self.skipped_files += 1
@@ -658,6 +677,12 @@ class AudioProcessor:
       progress_bar.destroy()
     self.progress_bars.clear()
 
+    # Remove index labels (used to index progress/threads), before creating new ones
+    for label in self.progress_bars_idx:
+      label.grid_forget()
+      label.destroy()
+    self.progress_bars_idx.clear()
+
     # Find, count and queue for processing all audio files
     self.queue_audio_files()
     # Check, if there are no audio files to process
@@ -668,16 +693,30 @@ class AudioProcessor:
     # Create progress bars dynamically
     n_progress_bars = min(self.total_files, self.n_threads.get())
     self.progress_bars = []
+    self.progress_bars_idx = []
     for i in range(n_progress_bars):
+      # Create index label
+      idx_label = ttk.Label(self.master, text=f"{i+1}")
+      idx_label.grid(row=9+i, column=0, sticky=tk.E, padx=5)
+      self.progress_bars_idx.append(idx_label)
+
+      # Create progress bar
       progress_bar = CustomProgressBar(self.master, width=1202, height=20)
       progress_bar.grid(row=9 + i, column=1)
       self.progress_bars.append(progress_bar)
 
+    # Create overall (total) progress bar
+    ttk.Label(self.master, text="Overall progress:").grid(row=8, column=0, sticky=tk.W, padx=5)
+    self.total_progress = CustomProgressBar(self.master, use_bold_font=True, width=1202, height=25)
+    self.total_progress.grid(row=8, column=1, pady=10)  # Place it above progress bars for processed files
+    self.total_progress.set_progress(0)
+    self.total_progress.set_display_text("0%  0/0")
+
     self.run_button.config(state=tk.DISABLED)
     for progress_bar in self.progress_bars:
       progress_bar.set_progress(0)
-    self.total_progress.set_progress(0)
     self.total_progress.set_display_text("0%  0/0")
+    self.total_progress.set_progress(5)
 
     self.start_time = time.time()
     msg = "Starting processing..."
@@ -693,8 +732,7 @@ class AudioProcessor:
     self.status_text.insert(tk.END, message + "\n")
     self.status_text.see(tk.END)
     self.status_text.config(state=tk.DISABLED)  # Disable editing
-    self.status_text.see(tk.END)  # Scroll to the bottom
-    self.master.update_idletasks()
+#    self.master.update_idletasks()
 
 
   #############################################################################
