@@ -456,8 +456,8 @@ class AudioProcessor:
       # We're using DFLT_BITRATE_KB as upper limit, but it can make the dst_est_sz_kbt < total_proce
       # Leading to progress bars >100%. Thus will manually limit any values >=100% to 100%
       total_progress_percentage = min(100, total_progress_percentage)
-      logging.debug(f"ttl_prcssd_sz_kb={total_processed_size_kb}, ttl_sz={self.total_dst_sz_kb}, prgrss={total_progress_percentage}")
-      total_progress_message = f"{total_progress_percentage}%  {self.processed_files}/{self.total_files}"
+#      logging.debug(f"ttl_prcssd_sz_kb={total_processed_size_kb}, ttl_sz={self.total_dst_sz_kb}, prgrss={total_progress_percentage}")
+      total_progress_message = f"{total_progress_percentage}%  {self.processed_files+self.skipped_files}/{self.total_files}"
 
       # Wrap GUI updates in try-except
       try:
@@ -469,7 +469,9 @@ class AudioProcessor:
 
       # When all files processed, set progress to 100% (might be a bit smaller/larger otherwise)
       if self.processed_files == self.total_files:
-        total_progress_message = f"100%  {self.processed_files}/{self.total_files}"
+        total_progress_message = f"100%  {self.processed_files+self.skipped_files}/{self.total_files}"
+        self.total_progress.set_progress(100)
+        self.total_progress.set_display_text(total_progress_message)
         try:
           self.master.after(100, self.finish_processing)
         except tk.TclError:
@@ -489,13 +491,14 @@ class AudioProcessor:
     self.processed_files_set.add(relative_path)
     process = None  # Define process outside try block
     try:
-      dst_file_path = os.path.join(self.dst_dir.get(), relative_path)
-      dst_file_path = self.handle_overwrite(dst_file_path, relative_path)
-      if dst_file_path is None:  # Skip file
+      # if dst_file_path is None:  # Skip file
+      if self.file_info[relative_path]["skipped"]:
         progress_bar.set_display_text(relative_path)
         progress_bar.set_progress(100)
         return  # Do not process, if the file should be skipped
 
+      dst_file_path = os.path.join(self.dst_dir.get(), relative_path)
+      dst_file_path = self.handle_overwrite(dst_file_path, relative_path)
       os.makedirs(os.path.dirname(dst_file_path), exist_ok=True)
 
       # Get pre-calculated file info
@@ -573,7 +576,7 @@ class AudioProcessor:
           dst_file_path = os.path.join(self.dst_dir.get(), dst_relative_path_base + '.mp3')
           if os.path.exists(dst_file_path) and overwrite_option == "Skip existing files":
             self.skipped_files += 1
-            self.file_info[relative_path] = {"dst_bitrate": 0, "duration": 0, "dst_est_sz_kbt": 0}
+            self.file_info[relative_path] = {"dst_bitrate": 0, "duration": 0, "dst_est_sz_kbt": 0, "skipped": True}
           else:
             # Get audio file metadata and calculate size
             src_bitrate, duration, success = self.get_metadata_info(self.ffmpeg_path.get(), full_path)
@@ -584,7 +587,7 @@ class AudioProcessor:
               # Leading to progress bars >100%. Thus will manually limit any values >=100% to 100%
               dst_bitrate = min(DFLT_BITRATE_KB, src_bitrate)
               dst_est_sz_kbt = int(dst_bitrate * duration / (8 * self.tempo.get())) # in KB
-              self.file_info[relative_path] = {"dst_bitrate": dst_bitrate, "duration": duration, "dst_est_sz_kbt": dst_est_sz_kbt}
+              self.file_info[relative_path] = {"dst_bitrate": dst_bitrate, "duration": duration, "dst_est_sz_kbt": dst_est_sz_kbt, "skipped": False}
               logging.debug(f"{relative_path}: dst_est_sz_kbt={dst_est_sz_kbt}")
               self.total_dst_sz_kb += dst_est_sz_kbt
             else:
