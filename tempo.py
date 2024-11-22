@@ -140,6 +140,8 @@ class AudioProcessor:
     self.processing_complete = False
     self.processed_files_set = set()
     self.processing_complete_event = threading.Event()
+    self.active_processes = []  # Add list to track FFMPEG processes
+    self.processes_lock = threading.Lock()  # Add lock for thread-safe access
 
     # Create GUI elements
     self.create_widgets()
@@ -151,7 +153,7 @@ class AudioProcessor:
     # Bind the save_config method to the window close event.
     self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-    self.setup_logging('INFO')  # 'INFO' or 'DEBUG' for more detailed logging
+    self.setup_logging('DEBUG')  # 'INFO' or 'DEBUG' for more detailed logging
     logging.info("AudioProcessor initialized")
 
     self.status_update_queue = queue.Queue()
@@ -369,7 +371,7 @@ class AudioProcessor:
       # Insert after "src_file_path" before "-filter:a"
       ffmpeg_command[3:3] = ffmpeg_compression_params
 
-    logging.debug(f"ProcessFile: FFMPEG command: {' '.join(ffmpeg_command)}")
+    logging.debug(f"Process File: FFMPEG command: {' '.join(ffmpeg_command)}")
     return ffmpeg_command
 
 
@@ -485,6 +487,7 @@ class AudioProcessor:
       return  # Skip if already processed
 
     self.processed_files_set.add(relative_path)
+    process = None  # Define process outside try block
     try:
       dst_file_path = os.path.join(self.dst_dir.get(), relative_path)
       dst_file_path = self.handle_overwrite(dst_file_path, relative_path)
@@ -514,9 +517,18 @@ class AudioProcessor:
         text=True,  # Use binary mode
         bufsize=1    # Line buffered
       )
+      # Add process to active processes list
+      with self.processes_lock:
+        self.active_processes.append(process)
+
       # Monitor and update each audio file processing progress
       self.monitor_progress(process, progress_bar, dst_est_sz_kbt, relative_path)
       self.master.update_idletasks()
+
+      # Remove process from active processes list
+      with self.processes_lock:
+        if process in self.active_processes:
+          self.active_processes.remove(process)
 
     except Exception as e:
       msg = f"Error processing {relative_path}: {e}"
@@ -524,6 +536,10 @@ class AudioProcessor:
       self.status_update_queue.put(msg)
       self.error_files += 1
     finally:
+      # Ensure process is removed from active processes even if error occurs
+      with self.processes_lock:
+        if process and process in self.active_processes:
+          self.active_processes.remove(process)
       self.update_total_progress() # Update total progress after each file
 
 
@@ -592,22 +608,37 @@ class AudioProcessor:
   #############################################################################
   def worker(self, thread_index):
     """Worker function for each thread, processing files from the queue."""
-    while not self.is_shutting_down:
+    while not self.is_shutting_down:  # Check shutdown flag
       try:
+        # Reduced timeout to make thread more responsive to shutdown
         file_path, relative_path = self.queue.get(timeout=0.1)
-        if file_path is None:  # Check for sentinel value
+
+        # Check shutdown flag immediately after getting item
+        if self.is_shutting_down:
+          self.queue.task_done()
           break
+
+        if file_path is None:
+          self.queue.task_done()
+          break
+
         self.process_file(file_path, relative_path, self.progress_bars[thread_index])
         self.queue.task_done()
+
       except queue.Empty:
-        break
+        # Check shutdown flag more frequently
+        if self.is_shutting_down:
+          break
+        continue
       except Exception as e:
         if not self.is_shutting_down:  # Only log if not shutting down
           msg = f"Error in thread {thread_index + 1}: {e}"
           self.status_update_queue.put(msg)
           logging.exception(msg)
+        self.queue.task_done()  # Ensure task is marked as done even on error
         break
 
+    logging.debug(f"Worker thread {thread_index + 1} shutting down")
     self.active_threads -= 1
     if self.active_threads == 0 and not self.is_shutting_down:
       try:
@@ -619,40 +650,58 @@ class AudioProcessor:
   #############################################################################
   def on_closing(self):
     """Handles window closing event, saving configuration."""
-    logging.info("Closing application, waiting for threads...")
-    self.is_shutting_down = True  # Set shutdown flag
+    logging.info("Starting application shutdown sequence...")
+    self.is_shutting_down = True
     self.save_config()
 
-    # Signal all threads to stop
-    for _ in range(len(self.threads)):
-      self.queue.put((None, None))  # Add sentinel values
+    # Kill all FFMPEG processes first
+    self.kill_active_processes()
 
-    # Wait for threads to finish with timeout
-    for thread in self.threads:
-      thread.join(timeout=2)
+    # Clear the file processing queue and signal threads to stop
+    queue_items = 0
 
-    # Clear the queue to prevent blocking
+    # Clear queue and signal threads in one pass
     while not self.queue.empty():
       try:
         self.queue.get_nowait()
+        self.queue.task_done()
+        queue_items += 1
       except queue.Empty:
         break
 
-    # Clear the status update queue
+    # Add sentinel values for remaining threads
+    for _ in range(len(self.threads)):
+      self.queue.put((None, None))
+
+    # Wait for threads with shorter timeout
+    logging.debug(f"Stopping {len(self.threads)} worker threads...")
+    start_time = time.time()
+    for thread in self.threads:
+      thread.join(timeout=0.01)
+      if thread.is_alive():
+        logging.warning(f"Worker thread {thread.name} failed to stop gracefully")
+    logging.debug(f"Worker threads stopped in {time.time() - start_time:.2f} seconds")
+
+    # Clear status update queue
+    status_items = 0
     while not self.status_update_queue.empty():
       try:
         self.status_update_queue.get_nowait()
+        self.status_update_queue.task_done()  # Mark task as done
       except queue.Empty:
         break
 
-    # Signal and wait for status update thread to stop
+    # Stop status update thread
     self.status_update_queue.put(None)
     try:
-      self.status_update_thread.join(timeout=2)
+      self.status_update_thread.join(timeout=0.2)
+      if self.status_update_thread.is_alive():
+        logging.warning("Status update thread failed to stop gracefully")
     except Exception as e:
       logging.error(f"Error joining status update thread: {e}")
 
     self.master.destroy()
+    logging.info("Application shutdown complete")
 
 
   #############################################################################
@@ -716,11 +765,12 @@ class AudioProcessor:
     for progress_bar in self.progress_bars:
       progress_bar.set_progress(0)
     self.total_progress.set_display_text("0%  0/0")
-    self.total_progress.set_progress(5)
+    self.total_progress.set_progress(0)
 
     self.start_time = time.time()
     msg = "Starting processing..."
     self.update_status(msg)
+    self.master.update_idletasks()
     logging.info(msg)
     self.start_process_files_threads()
 
@@ -846,6 +896,24 @@ class AudioProcessor:
       except Exception as e:
         logging.exception("Error in status update thread: %s", e)
         break
+
+
+  #############################################################################
+  def kill_active_processes(self):
+    """Terminates all active FFMPEG processes."""
+    with self.processes_lock:
+      for process in self.active_processes:
+        try:
+          if process.poll() is None:  # Check if process is still running
+            process.terminate()  # Try graceful termination first
+            try:
+              process.wait(timeout=1)  # Wait for termination
+            except subprocess.TimeoutExpired:
+              process.kill()  # Force kill if termination takes too long
+              process.wait()
+        except Exception as e:
+          logging.error(f"Error killing process: {e}")
+      self.active_processes.clear()
 
 
 ###############################################################################
