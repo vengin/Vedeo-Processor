@@ -153,7 +153,7 @@ class AudioProcessor:
     # Bind the save_config method to the window close event.
     self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-    self.setup_logging('DEBUG')  # 'INFO' or 'DEBUG' for more detailed logging
+    self.setup_logging('INFO')  # 'INFO' or 'DEBUG' for more detailed logging
     logging.info("AudioProcessor initialized")
 
     self.status_update_queue = queue.Queue()
@@ -535,12 +535,15 @@ class AudioProcessor:
       logging.exception(msg)
       self.status_update_queue.put(msg)
       self.error_files += 1
+      raise
     finally:
       # Ensure process is removed from active processes even if error occurs
       with self.processes_lock:
-        if process and process in self.active_processes:
+        #if process and process in self.active_processes:
+        if process in self.active_processes:
           self.active_processes.remove(process)
-      self.update_total_progress() # Update total progress after each file
+      if not self.is_shutting_down:
+        self.update_total_progress() # Update total progress after each file
 
 
   #############################################################################
@@ -596,11 +599,13 @@ class AudioProcessor:
 
   #############################################################################
   def start_process_files_threads(self):
-    """Starts worker threads to process the files."""
+    """Starts the file processing threads."""
     num_threads = min(self.n_threads.get(), self.total_files)
     self.active_threads = num_threads
+
     for i in range(num_threads):
-      thread = threading.Thread(target=self.worker, args=(i,), daemon=True)  # Set daemon=True
+      thread = threading.Thread(target=self.worker, args=(i,), name=f"Worker-{i}")
+      thread.daemon = True  # Make thread daemon so it doesn't prevent program exit
       self.threads.append(thread)
       thread.start()
 
@@ -614,37 +619,37 @@ class AudioProcessor:
         file_path, relative_path = self.queue.get(timeout=0.1)
 
         # Check shutdown flag immediately after getting item
-        if self.is_shutting_down:
-          self.queue.task_done()
-          break
-
-        if file_path is None:
+        if file_path is None or self.is_shutting_down:
           self.queue.task_done()
           break
 
         self.process_file(file_path, relative_path, self.progress_bars[thread_index])
         self.queue.task_done()
 
+        # Check if this was the last file
+        if len(self.processed_files_set) >= self.total_files:
+          break
+
       except queue.Empty:
-        # Check shutdown flag more frequently
-        if self.is_shutting_down:
+        # Check if all files are processed
+        if len(self.processed_files_set) >= self.total_files:
           break
         continue
       except Exception as e:
-        if not self.is_shutting_down:  # Only log if not shutting down
-          msg = f"Error in thread {thread_index + 1}: {e}"
+        if not self.is_shutting_down:
+          msg = f"Error in worker {thread_index}: {e}"
           self.status_update_queue.put(msg)
           logging.exception(msg)
         self.queue.task_done()  # Ensure task is marked as done even on error
         break
 
-    logging.debug(f"Worker thread {thread_index + 1} shutting down")
-    self.active_threads -= 1
-    if self.active_threads == 0 and not self.is_shutting_down:
-      try:
-        self.master.after(100, self.finish_processing)
-      except tk.TclError:
-        logging.debug("GUI already closed, skipping finish_processing call")
+    with threading.Lock():  # Use a lock to safely decrement active_threads
+      self.active_threads -= 1
+      if self.active_threads == 0 and not self.is_shutting_down:
+        try:
+          self.master.after(100, self.finish_processing)
+        except tk.TclError:
+          logging.debug("GUI already closed, skipping finish_processing call")
 
 
   #############################################################################
@@ -674,13 +679,10 @@ class AudioProcessor:
       self.queue.put((None, None))
 
     # Wait for threads with shorter timeout
-    logging.debug(f"Stopping {len(self.threads)} worker threads...")
-    start_time = time.time()
     for thread in self.threads:
       thread.join(timeout=0.01)
       if thread.is_alive():
         logging.warning(f"Worker thread {thread.name} failed to stop gracefully")
-    logging.debug(f"Worker threads stopped in {time.time() - start_time:.2f} seconds")
 
     # Clear status update queue
     status_items = 0
@@ -788,52 +790,53 @@ class AudioProcessor:
   #############################################################################
   def finish_processing(self, calc_time=True):
     """Handles processing completion."""
-    if self.processing_complete == False:
-      self.processing_complete = True
-      #
-      processing_time_str = ""
-      if (calc_time == True):
-        end_time = time.time()
-        processing_time = end_time - self.start_time
-        # Convert time in seconds to "XX min YY sec" string, e.g. 95 sec = "1 min 35 sec"
-        if processing_time < 60:
-          processing_time_str += f"{processing_time:.2f} sec"
-        else:
-          processing_time_str += f"{int(processing_time/60)} min {int(processing_time%60)} sec"
+    if self.processing_complete:
+      return
+    self.processing_complete = True
+    #
+    processing_time_str = ""
+    if (calc_time == True):
+      end_time = time.time()
+      processing_time = end_time - self.start_time
+      # Convert time in seconds to "XX min YY sec" string, e.g. 95 sec = "1 min 35 sec"
+      if processing_time < 60:
+        processing_time_str += f"{processing_time:.2f} sec"
       else:
-        processing_time = 0
+        processing_time_str += f"{int(processing_time/60)} min {int(processing_time%60)} sec"
+    else:
+      processing_time = 0
 
-      # Example msg: "3 Files Total: 1 processed, 1 Skipped, 1 Error. Compression ratio  3.95"
-      # Add Total and Processed files
-      msg = f"{self.total_files} Files Total: {self.processed_files} Processed"
-      # Add non-zero Skipped files
-      if self.skipped_files:
-        msg += f", {self.skipped_files} Skipped"
-      # Add non-zero Error files
-      if self.error_files:
-        msg += f", {self.error_files} Errors"
-      # Add Processing time
-      if (processing_time != 0) and (self.skipped_files < self.total_files):
-        msg += f" in {processing_time_str}."
-      # Add Compression Ratio
-      total_dst_sz_mb = self.total_dst_sz_kb / 1024
-      total_src_sz_mb = self.total_src_sz / (1024 * 1024)
-      if total_dst_sz_mb:
-        msg += f" Compression ratio {(total_src_sz_mb / total_dst_sz_mb):.2f}."
+    # Example msg: "3 Files Total: 1 processed, 1 Skipped, 1 Error. Compression ratio  3.95"
+    # Add Total and Processed files
+    msg = f"{self.total_files} Files Total: {self.processed_files} Processed"
+    # Add non-zero Skipped files
+    if self.skipped_files:
+      msg += f", {self.skipped_files} Skipped"
+    # Add non-zero Error files
+    if self.error_files:
+      msg += f", {self.error_files} Errors"
+    # Add Processing time
+    if (processing_time != 0) and (self.skipped_files < self.total_files):
+      msg += f" in {processing_time_str}."
+    # Add Compression Ratio
+    total_dst_sz_mb = self.total_dst_sz_kb / 1024
+    total_src_sz_mb = self.total_src_sz / (1024 * 1024)
+    if total_dst_sz_mb:
+      msg += f" Compression ratio {(total_src_sz_mb / total_dst_sz_mb):.2f}."
 
-      # Display message
-      self.update_status("\n" + msg)
-      logging.info(msg)
-      self.run_button.config(state=tk.NORMAL)
+    # Display message
+    self.update_status("\n" + msg)
+    logging.info(msg)
+    self.run_button.config(state=tk.NORMAL)
 
-      # 100%
-      total_progress_message = f"100%  {self.processed_files+self.skipped_files}/{self.total_files}"
-      self.total_progress.set_progress(100)
-      self.total_progress.set_display_text(total_progress_message)
+    # 100%
+    total_progress_message = f"100%  {self.processed_files+self.skipped_files}/{self.total_files}"
+    self.total_progress.set_progress(100)
+    self.total_progress.set_display_text(total_progress_message)
 
-      # Clear the threads list
-      self.threads.clear()
-      self.master.update_idletasks()
+    # Clear the threads list
+    self.threads.clear()
+    self.master.update_idletasks()
 
 
   #############################################################################
