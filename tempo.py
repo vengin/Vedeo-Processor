@@ -449,8 +449,15 @@ class AudioProcessor:
     if self.is_shutting_down:
       return
 
-    try:
-      with self.processed_sz_arr_lock:
+    current_time = time.time()
+
+    # Only update GUI at specified intervals >= GUI_TIMEOUT
+    if not hasattr(self, '_last_progress_update') or \
+       (current_time - self._last_progress_update) >= GUI_TIMEOUT:
+      self._last_progress_update = current_time
+
+      # Update processed size under lock
+      with self.total_dst_sz_lock:
         total_processed_size_kb = sum(self.processed_sz_arr.values())
       total_progress_percentage = int((total_processed_size_kb / self.total_dst_sz_kb) * 100) if self.total_dst_sz_kb > 0 else 0
       # We're using DFLT_BITRATE_KB as upper limit, but it can make the dst_est_sz_kbt < total_proce
@@ -477,8 +484,6 @@ class AudioProcessor:
         except tk.TclError:
           logging.debug("GUI already closed, skipping final progress update")
 
-    except Exception as e:
-      logging.error(f"Error updating total progress: {e}")
 
 
   #############################################################################
