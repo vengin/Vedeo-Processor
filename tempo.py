@@ -24,7 +24,8 @@ DFLT_N_THREADS_MAX = 16
 DFLT_CONFIG_FILE = "tempo_config.ini"
 DFLT_OVERWRITE_OPTION = "Skip existing files"  # Skip by default
 DFLT_USE_COMPRESSION_OPTION = False  # No compression by default
-GUI_TIMEOUT = 0.3
+GUI_TIMEOUT = 0.3 # in seconds
+UPDATE_STATUS_TIMEOUT = 1 # in seconds
 DFLT_BITRATE_KB = 55 # i.e. 64K
 
 
@@ -566,6 +567,8 @@ class AudioProcessor:
     self.total_dst_sz_kb = 0
     self.total_src_sz = 0
 
+    last_update_time = time.time()
+
     for root, _, files in os.walk(src_dir):
       for file in files:
         if file.lower().endswith(('.mp3', '.m4a', 'm4b', '.wav', '.ogg', '.flac')):
@@ -599,9 +602,18 @@ class AudioProcessor:
               logging.error(f"Could not get audio file metadata for {full_path}")
               self.error_files += 1
 
+          # Update the status_text every second, replacing text (instead of adding new lines)
+          current_time = time.time()
+          if current_time - last_update_time >= UPDATE_STATUS_TIMEOUT:
+            msg = f"{self.total_files} files analyzed, {self.total_src_sz / (1024 * 1024):.2f} MB"
+            self.update_status(msg, replace=True)
+            logging.info(msg)
+            self.master.update_idletasks()
+            last_update_time = current_time
+
     logging.debug(f"total_dst_sz_kb={self.total_dst_sz_kb}")
     msg = f"{self.total_files} files found, {self.total_src_sz/(1024*1024):.2f} MB"
-    self.update_status(msg)
+    self.update_status(msg, replace=True)
     logging.info(msg)
 
 
@@ -786,9 +798,11 @@ class AudioProcessor:
 
 
   #############################################################################
-  def update_status(self, message):
+  def update_status(self, message, replace=False):
     """Updates the status text area."""
     self.status_text.config(state=tk.NORMAL)  # Enable editing
+    if replace:
+      self.status_text.delete(1.0, tk.END)
     self.status_text.insert(tk.END, message + "\n")
     self.status_text.see(tk.END)
     self.status_text.config(state=tk.DISABLED)  # Disable editing
