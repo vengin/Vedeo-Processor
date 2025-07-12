@@ -4,7 +4,6 @@ from tkinter import ttk
 from tkinter import scrolledtext
 from tkinter import messagebox
 from datetime import datetime
-#from tinytag import TinyTag
 import json
 import configparser
 import os
@@ -27,7 +26,6 @@ DFLT_OVERWRITE_OPTION = "Skip existing files"  # Skip by default
 DFLT_USE_COMPRESSION_OPTION = False  # No compression by default
 GUI_TIMEOUT = 0.3 # in seconds
 UPDATE_STATUS_TIMEOUT = 1 # in seconds
-DFLT_BITRATE_KB = 55 # i.e. 64K
 
 
 #############################################################################
@@ -129,15 +127,11 @@ class AudioProcessor:
     self.total_files = 0
     self.processed_files = 0
     self.processed_files_lock = threading.Lock()  # Lock for thread-safe access
-    # self.processed_sz_arr = {}
-    # self.processed_sz_arr_lock = threading.Lock()  # Lock for thread-safe access
     self.processed_seconds_arr = {}
     self.processed_seconds_arr_lock = threading.Lock()  # Lock for thread-safe access
     self.total_dst_seconds = 0  # Total size of all files
     self.total_dst_seconds_lock = threading.Lock()  # Lock for thread-safe access
     self.total_dst_sz = 0
-    # self.total_dst_sz_kb = 0  # Total size of all files
-    # self.total_dst_sz_lock = threading.Lock()  # Lock for thread-safe access
     self.total_src_sz = 0
     self.error_files = 0
     self.skipped_files = 0
@@ -303,16 +297,10 @@ class AudioProcessor:
         '-of', 'json',
         src_file_path
       ]
-      # Example output to parse:
-      # size=    2560KiB time=00:07:47.20 bitrate=  44.9kbits/s speed= 226x
       rslt = subprocess.run(ffprobe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
       info = json.loads(rslt.stdout)
       total_seconds = int(float(info['format']['duration']))  # seconds
 
-      # tag = TinyTag.get(src_file_path)
-      # total_seconds = int(tag.duration)  # audio duration in seconds as float
-      # bitrate_kbps = int(tag.bitrate)    # bitrate in kBits/s as float
-      # bitrate_kbps = int(tag.bitrate)    # bitrate in kBits/s as float
     except Exception as e:
       logging.error(f"Error getting Tag info from {src_file_path}: {e}")
       return None, None, False
@@ -434,15 +422,9 @@ class AudioProcessor:
           line = q.get(timeout=GUI_TIMEOUT)
           if line is None:
             break
-          match = re.search(r"size=\s*(\d+)\w+", line)
-          # if match:
-          #   processed_sz_kb = int(match.group(1))  # in KB
-          #   progress = min(100, (processed_sz_kb / dst_est_sz_kbt) * 100) if dst_est_sz_kbt > 0 else 0 # Do not exceed 100%
-          #   progress_bar.set_progress(progress)
-          #   self.master.update_idletasks()
-          #   with self.processed_sz_arr_lock:
-          #     self.processed_sz_arr[relative_path] = processed_sz_kb #Store by filename
 
+          # Example output to parse:
+          # size=    2560KiB time=00:07:47.20 bitrate=  44.9kbits/s speed= 226x
           match = re.search(r"time=(?P<hours>\d{2}):(?P<minutes>\d{2}):(?P<seconds>\d{2})\.(?P<milliseconds>\d{2})", line)
           if match:
             # Calculate the total seconds by converting each part to an integer/float
@@ -454,8 +436,6 @@ class AudioProcessor:
             )
             with self.processed_seconds_arr_lock:
               self.processed_seconds_arr[relative_path] = processed_seconds #Store by filename
-            # print(f"Total time in seconds: {processed_seconds}")
-            # # Extracted time parts
             progress = min(100, (processed_seconds / dst_time) * 100) if dst_time > 0 else 0 # Do not exceed 100%
             progress_bar.set_progress(progress)
             self.master.update_idletasks()
@@ -491,16 +471,6 @@ class AudioProcessor:
     if not hasattr(self, '_last_progress_update') or \
        (current_time - self._last_progress_update) >= GUI_TIMEOUT:
       self._last_progress_update = current_time
-
-      # # Update processed size under lock
-      # with self.total_dst_sz_lock:
-      #   total_processed_size_kb = sum(self.processed_sz_arr.values())
-      # total_progress_percentage = int((total_processed_size_kb / self.total_dst_sz_kb) * 100) if self.total_dst_sz_kb > 0 else 0
-      # # We're using DFLT_BITRATE_KB as upper limit, but it can make the dst_est_sz_kbt < total_proce
-      # # Leading to progress bars >100%. Thus will manually limit any values >=100% to 100%
-      # total_progress_percentage = min(100, total_progress_percentage)
-      # # logging.debug(f"ttl_prcssd_sz_kb={total_processed_size_kb}, ttl_sz={self.total_dst_sz_kb}, prgrss={total_progress_percentage}")
-
 
       # Update processed time under lock
       with self.total_dst_seconds_lock:
@@ -613,11 +583,6 @@ class AudioProcessor:
           self.total_dst_sz += os.path.getsize(full_path)
           n_files += 1
 
-    # logging.debug(f"total_dst_sz={self.total_dst_sz}")
-    # msg = f"{n_files} dst files found, {self.total_dst_sz/(1024*1024):.2f} MB"
-    # self.update_status(msg)
-    # logging.info(msg)
-
 
   #############################################################################
   def queue_audio_files(self):
@@ -667,8 +632,6 @@ class AudioProcessor:
           # Update the status_text every second, replacing text (instead of adding new lines)
           current_time = time.time()
           if current_time - last_update_time >= UPDATE_STATUS_TIMEOUT:
-            # msg = f"{self.total_files} files analyzed, {self.total_src_sz / (1024 * 1024):.2f} MB"
-            # msg = f"{self.total_files} files analyzed, Duration: {self.total_dst_seconds / (60):.2f} Minutes"
             msg = f"{self.total_files} files analyzed, total duration: "
             if (self.total_dst_seconds > 3600):  # > 1 Hour?
               msg += f"{self.total_dst_seconds / (3600):.2f} Hours"
@@ -679,10 +642,7 @@ class AudioProcessor:
             self.master.update_idletasks()
             last_update_time = current_time
 
-    # logging.debug(f"total_dst_sz_kb={self.total_dst_sz_kb}")
-    # msg = f"{self.total_files} files found, {self.total_src_sz/(1024*1024):.2f} MB"
     logging.debug(f"total_dst_seconds={self.total_dst_seconds}")
-    # msg = f"{self.total_files} files found, Duration: {self.total_dst_seconds / (60):.2f} Minutes"
     msg = f"{self.total_files} files analyzed, total duration: "
     if (self.total_dst_seconds > 3600):  # > 1 Hour?
       msg += f"{self.total_dst_seconds / (3600):.2f} Hours"
@@ -781,7 +741,6 @@ class AudioProcessor:
         logging.warning(f"Worker thread {thread.name} failed to stop gracefully")
 
     # Clear status update queue
-    status_items = 0
     while not self.status_update_queue.empty():
       try:
         self.status_update_queue.get_nowait()

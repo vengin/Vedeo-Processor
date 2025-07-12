@@ -17,21 +17,16 @@ A Python GUI application that allows you to batch process audio files by changin
 ## Requirements
 
 - Python 3.x
-- FFmpeg executable
+- FFmpeg and FFprobe executables
 - Python packages:
   - tkinter (usually comes with Python)
-  - tinytag
   - configparser
 
 ## Installation
 
 1. Ensure Python 3.x is installed on your system
-2. Download and install FFmpeg
-3. Install required Python packages:
-   ```bash
-   pip install tinytag
-   ```
-4. Download `tempo.py` and run it
+2. Download and install FFmpeg (with FFprobe)
+3. Download `tempo.py` and run it
 
 ## Configuration
 
