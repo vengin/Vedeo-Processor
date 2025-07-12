@@ -4,7 +4,8 @@ from tkinter import ttk
 from tkinter import scrolledtext
 from tkinter import messagebox
 from datetime import datetime
-from tinytag import TinyTag
+#from tinytag import TinyTag
+import json
 import configparser
 import os
 import subprocess
@@ -128,10 +129,15 @@ class AudioProcessor:
     self.total_files = 0
     self.processed_files = 0
     self.processed_files_lock = threading.Lock()  # Lock for thread-safe access
-    self.processed_sz_arr = {}
-    self.processed_sz_arr_lock = threading.Lock()  # Lock for thread-safe access
-    self.total_dst_sz_kb = 0  # Total size of all files
-    self.total_dst_sz_lock = threading.Lock()  # Lock for thread-safe access
+    # self.processed_sz_arr = {}
+    # self.processed_sz_arr_lock = threading.Lock()  # Lock for thread-safe access
+    self.processed_seconds_arr = {}
+    self.processed_seconds_arr_lock = threading.Lock()  # Lock for thread-safe access
+    self.total_dst_seconds = 0  # Total size of all files
+    self.total_dst_seconds_lock = threading.Lock()  # Lock for thread-safe access
+    self.total_dst_sz = 0
+    # self.total_dst_sz_kb = 0  # Total size of all files
+    # self.total_dst_sz_lock = threading.Lock()  # Lock for thread-safe access
     self.total_src_sz = 0
     self.error_files = 0
     self.skipped_files = 0
@@ -287,19 +293,31 @@ class AudioProcessor:
 
   #############################################################################
   def get_metadata_info(self, ffmpeg_path, src_file_path):
-    """Gets audio file metadata (Duration, Bitrate, processed size) using TinyTag."""
+    """Gets audio file metadata (Duration) using FFPROBE."""
     try:
-      tag = TinyTag.get(src_file_path)
-      total_seconds = int(tag.duration)  # audio duration in seconds as float
-      bitrate_kbps = int(tag.bitrate)    # bitrate in kBits/s as float
-      bitrate_kbps = int(tag.bitrate)    # bitrate in kBits/s as float
-      if bitrate_kbps == 0:
-        bitrate_kbps = DFLT_BITRATE_KB
+      # Derive ffprobe_path from ffmpeg_path
+      ffprobe_path = os.path.join(os.path.dirname(ffmpeg_path), "ffprobe.exe")
+      ffprobe_cmd = [
+        ffprobe_path, '-v', 'error',
+        '-show_entries', 'format=duration',
+        '-of', 'json',
+        src_file_path
+      ]
+      # Example output to parse:
+      # size=    2560KiB time=00:07:47.20 bitrate=  44.9kbits/s speed= 226x
+      rslt = subprocess.run(ffprobe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+      info = json.loads(rslt.stdout)
+      total_seconds = int(float(info['format']['duration']))  # seconds
+
+      # tag = TinyTag.get(src_file_path)
+      # total_seconds = int(tag.duration)  # audio duration in seconds as float
+      # bitrate_kbps = int(tag.bitrate)    # bitrate in kBits/s as float
+      # bitrate_kbps = int(tag.bitrate)    # bitrate in kBits/s as float
     except Exception as e:
       logging.error(f"Error getting Tag info from {src_file_path}: {e}")
       return None, None, False
 
-    return bitrate_kbps, total_seconds, True
+    return total_seconds, True
 
 
   #############################################################################
@@ -339,7 +357,7 @@ class AudioProcessor:
 
 
   #############################################################################
-  def generate_ffmpeg_command(self, src_file_path, dst_file_path, bit_rate):
+  def generate_ffmpeg_command(self, src_file_path, dst_file_path):
     """Generates the FFMPEG command with tempo and optional compression."""
     # Convert paths to string and handle potential encoding issues
     src_file_path = str(src_file_path)
@@ -377,7 +395,7 @@ class AudioProcessor:
 
 
   #############################################################################
-  def monitor_progress(self, process, progress_bar, dst_est_sz_kbt, relative_path):
+  def monitor_progress(self, process, progress_bar, dst_time, relative_path):
     """Monitors FFMPEG progress for each audio file and updates the progress bar."""
     q = queue.Queue()
 
@@ -417,14 +435,31 @@ class AudioProcessor:
           if line is None:
             break
           match = re.search(r"size=\s*(\d+)\w+", line)
+          # if match:
+          #   processed_sz_kb = int(match.group(1))  # in KB
+          #   progress = min(100, (processed_sz_kb / dst_est_sz_kbt) * 100) if dst_est_sz_kbt > 0 else 0 # Do not exceed 100%
+          #   progress_bar.set_progress(progress)
+          #   self.master.update_idletasks()
+          #   with self.processed_sz_arr_lock:
+          #     self.processed_sz_arr[relative_path] = processed_sz_kb #Store by filename
+
+          match = re.search(r"time=(?P<hours>\d{2}):(?P<minutes>\d{2}):(?P<seconds>\d{2})\.(?P<milliseconds>\d{2})", line)
           if match:
-            processed_sz_kb = int(match.group(1))  # in KB
-            progress = min(100, (processed_sz_kb / dst_est_sz_kbt) * 100) if dst_est_sz_kbt > 0 else 0 # Do not exceed 100%
+            # Calculate the total seconds by converting each part to an integer/float
+            processed_seconds = (
+              int(match['hours']) * 3600 +
+              int(match['minutes']) * 60 +
+              int(match['seconds']) +
+              int(match['milliseconds']) / 100.0  # Convert milliseconds to a fraction of a second
+            )
+            with self.processed_seconds_arr_lock:
+              self.processed_seconds_arr[relative_path] = processed_seconds #Store by filename
+            # print(f"Total time in seconds: {processed_seconds}")
+            # # Extracted time parts
+            progress = min(100, (processed_seconds / dst_time) * 100) if dst_time > 0 else 0 # Do not exceed 100%
             progress_bar.set_progress(progress)
             self.master.update_idletasks()
 
-            with self.processed_sz_arr_lock:
-              self.processed_sz_arr[relative_path] = processed_sz_kb #Store by filename
             self.update_total_progress()
             time.sleep(GUI_TIMEOUT)
 
@@ -457,14 +492,23 @@ class AudioProcessor:
        (current_time - self._last_progress_update) >= GUI_TIMEOUT:
       self._last_progress_update = current_time
 
-      # Update processed size under lock
-      with self.total_dst_sz_lock:
-        total_processed_size_kb = sum(self.processed_sz_arr.values())
-      total_progress_percentage = int((total_processed_size_kb / self.total_dst_sz_kb) * 100) if self.total_dst_sz_kb > 0 else 0
-      # We're using DFLT_BITRATE_KB as upper limit, but it can make the dst_est_sz_kbt < total_proce
-      # Leading to progress bars >100%. Thus will manually limit any values >=100% to 100%
+      # # Update processed size under lock
+      # with self.total_dst_sz_lock:
+      #   total_processed_size_kb = sum(self.processed_sz_arr.values())
+      # total_progress_percentage = int((total_processed_size_kb / self.total_dst_sz_kb) * 100) if self.total_dst_sz_kb > 0 else 0
+      # # We're using DFLT_BITRATE_KB as upper limit, but it can make the dst_est_sz_kbt < total_proce
+      # # Leading to progress bars >100%. Thus will manually limit any values >=100% to 100%
+      # total_progress_percentage = min(100, total_progress_percentage)
+      # # logging.debug(f"ttl_prcssd_sz_kb={total_processed_size_kb}, ttl_sz={self.total_dst_sz_kb}, prgrss={total_progress_percentage}")
+
+
+      # Update processed time under lock
+      with self.total_dst_seconds_lock:
+        total_processed_seconds = sum(self.processed_seconds_arr.values())
+      total_progress_percentage = int((total_processed_seconds / self.total_dst_seconds) * 100) if self.total_dst_seconds > 0 else 0
       total_progress_percentage = min(100, total_progress_percentage)
-#      logging.debug(f"ttl_prcssd_sz_kb={total_processed_size_kb}, ttl_sz={self.total_dst_sz_kb}, prgrss={total_progress_percentage}")
+      logging.debug(f"ttl_prcssd_seconds={int(total_processed_seconds)}, ttl_seconds={int(self.total_dst_seconds)}, prgrss={total_progress_percentage}")
+
       total_progress_message = f"{total_progress_percentage}%  {self.processed_files+self.skipped_files}/{self.total_files}"
 
       # Wrap GUI updates in try-except
@@ -509,15 +553,15 @@ class AudioProcessor:
 
       # Get pre-calculated file info
       file_data = self.file_info[relative_path]
-      dst_bitrate = file_data["dst_bitrate"]
-      duration = file_data["duration"]
-      dst_est_sz_kbt = file_data["dst_est_sz_kbt"]
+      # dst_bitrate = file_data["dst_bitrate"]
+      dst_time = file_data["duration"]
+      # dst_est_sz_kbt = file_data["dst_est_sz_kbt"]
 
       # Display processed filename in progress bar
       progress_bar.set_display_text(os.path.basename(dst_file_path))
 
       # Generate ffmpeg command with tempo and optional compression
-      ffmpeg_command = self.generate_ffmpeg_command(src_file_path, dst_file_path, dst_bitrate)
+      ffmpeg_command = self.generate_ffmpeg_command(src_file_path, dst_file_path)
       # Start FFMPEG process in binary mode for each file (n_threads)
       process = subprocess.Popen(
         ffmpeg_command,
@@ -531,7 +575,7 @@ class AudioProcessor:
         self.active_processes.append(process)
 
       # Monitor and update each audio file processing progress
-      self.monitor_progress(process, progress_bar, dst_est_sz_kbt, relative_path)
+      self.monitor_progress(process, progress_bar, dst_time, relative_path)
       self.master.update_idletasks()
 
       # Remove process from active processes list
@@ -556,6 +600,26 @@ class AudioProcessor:
 
 
   #############################################################################
+  def count_dst_files_sz(self):
+    """Calculate the actual size of output files after processing."""
+    dst_dir = self.dst_dir.get()
+    n_files = 0
+    self.total_dst_sz = 0
+
+    for root, _, files in os.walk(dst_dir):
+      for file in files:
+        if file.lower().endswith(('.mp3')):
+          full_path = os.path.join(root, file)
+          self.total_dst_sz += os.path.getsize(full_path)
+          n_files += 1
+
+    # logging.debug(f"total_dst_sz={self.total_dst_sz}")
+    # msg = f"{n_files} dst files found, {self.total_dst_sz/(1024*1024):.2f} MB"
+    # self.update_status(msg)
+    # logging.info(msg)
+
+
+  #############################################################################
   def queue_audio_files(self):
     """Find, count, queue audio files, and pre-calculate output sizes."""
     src_dir = self.src_dir.get()
@@ -563,9 +627,10 @@ class AudioProcessor:
     self.queue = queue.Queue()
     self.file_info = {}  # Dictionary to store file info
     self.processed_files_set.clear()
-    self.processed_sz_arr.clear()
-    self.total_dst_sz_kb = 0
-    self.total_src_sz = 0
+    # self.processed_sz_arr.clear()
+    # self.total_dst_sz_kb = 0
+    # self.total_src_sz = 0
+    self.total_dst_seconds = 0
 
     last_update_time = time.time()
 
@@ -584,20 +649,17 @@ class AudioProcessor:
           dst_file_path = os.path.join(self.dst_dir.get(), dst_relative_path_base + '.mp3')
           if os.path.exists(dst_file_path) and overwrite_option == "Skip existing files":
             self.skipped_files += 1
-            self.file_info[relative_path] = {"dst_bitrate": 0, "duration": 0, "dst_est_sz_kbt": 0, "skipped": True}
+            self.file_info[relative_path] = {"duration": 0, "skipped": True}
           else:
             # Get audio file metadata and calculate size
-            src_bitrate, duration, success = self.get_metadata_info(self.ffmpeg_path.get(), full_path)
+            duration, success = self.get_metadata_info(self.ffmpeg_path.get(), full_path)
             if success:
-              # In FFMPEG fixed bitrate (-b:a 64k) doesn't work in combination wtih Quality Setting for VBR (-q:a 7)
-              # According to GPT for VBR (-q:a 7) has ~100K average bitrate. In practise it is closer to 55K.
-              # We'll use DFLT_BITRATE_KB as upper limit, but it can make the dst_est_sz_kbt < total_processed_size_kb
-              # Leading to progress bars >100%. Thus will manually limit any values >=100% to 100%
-              dst_bitrate = min(DFLT_BITRATE_KB, src_bitrate)
-              dst_est_sz_kbt = int(dst_bitrate * duration / (8 * self.tempo.get())) # in KB
-              self.file_info[relative_path] = {"dst_bitrate": dst_bitrate, "duration": duration, "dst_est_sz_kbt": dst_est_sz_kbt, "skipped": False}
-              logging.debug(f"{relative_path}: dst_est_sz_kbt={dst_est_sz_kbt}")
-              self.total_dst_sz_kb += dst_est_sz_kbt
+              self.file_info[relative_path] = {"duration": duration, "skipped": False}
+              # logging.debug(f"{relative_path}: dst_est_sz_kbt={dst_est_sz_kbt}")
+              dst_seconds = int(duration/self.tempo.get()) if self.tempo.get() > 0 else duration
+              self.total_dst_seconds += dst_seconds
+              logging.debug(f"{relative_path}: dst_seconds={dst_seconds}")
+
             else:
               logging.error(f"Could not get audio file metadata for {full_path}")
               self.error_files += 1
@@ -605,14 +667,28 @@ class AudioProcessor:
           # Update the status_text every second, replacing text (instead of adding new lines)
           current_time = time.time()
           if current_time - last_update_time >= UPDATE_STATUS_TIMEOUT:
-            msg = f"{self.total_files} files analyzed, {self.total_src_sz / (1024 * 1024):.2f} MB"
+            # msg = f"{self.total_files} files analyzed, {self.total_src_sz / (1024 * 1024):.2f} MB"
+            # msg = f"{self.total_files} files analyzed, Duration: {self.total_dst_seconds / (60):.2f} Minutes"
+            msg = f"{self.total_files} files analyzed, total duration: "
+            if (self.total_dst_seconds > 3600):  # > 1 Hour?
+              msg += f"{self.total_dst_seconds / (3600):.2f} Hours"
+            else:
+              msg += f"{self.total_dst_seconds / (60):.2f} Minutes"
             self.update_status(msg, replace=True)
             logging.info(msg)
             self.master.update_idletasks()
             last_update_time = current_time
 
-    logging.debug(f"total_dst_sz_kb={self.total_dst_sz_kb}")
-    msg = f"{self.total_files} files found, {self.total_src_sz/(1024*1024):.2f} MB"
+    # logging.debug(f"total_dst_sz_kb={self.total_dst_sz_kb}")
+    # msg = f"{self.total_files} files found, {self.total_src_sz/(1024*1024):.2f} MB"
+    logging.debug(f"total_dst_seconds={self.total_dst_seconds}")
+    # msg = f"{self.total_files} files found, Duration: {self.total_dst_seconds / (60):.2f} Minutes"
+    msg = f"{self.total_files} files analyzed, total duration: "
+    if (self.total_dst_seconds > 3600):  # > 1 Hour?
+      msg += f"{self.total_dst_seconds / (3600):.2f} Hours"
+    else:
+      msg += f"{self.total_dst_seconds / (60):.2f} Minutes"
+
     self.update_status(msg, replace=True)
     logging.info(msg)
 
@@ -841,7 +917,8 @@ class AudioProcessor:
     if (processing_time != 0) and (self.skipped_files < self.total_files):
       msg += f" in {processing_time_str}."
     # Add Compression Ratio
-    total_dst_sz_mb = self.total_dst_sz_kb / 1024
+    self.count_dst_files_sz()
+    total_dst_sz_mb = self.total_dst_sz / (1024 * 1024)  #self.total_dst_sz_kb / 1024
     total_src_sz_mb = self.total_src_sz / (1024 * 1024)
     if total_dst_sz_mb:
       msg += f" Compression ratio {(total_src_sz_mb / total_dst_sz_mb):.2f}."
