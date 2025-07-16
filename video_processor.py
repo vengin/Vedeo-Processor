@@ -18,12 +18,11 @@ import re
 DFLT_FFMPEG_PATH = "d:/PF/_Tools/ffmpeg/bin/ffmpeg.exe"  # Change this if your ffmpeg path is different.
 DFLT_SRC_DIR = ""
 DFLT_DST_DIR = ""
-DFLT_TEMPO = 1.8
+DFLT_TEMPO = 1.0
 DFLT_N_THREADS = 4
 DFLT_N_THREADS_MAX = 16
-DFLT_CONFIG_FILE = "tempo_config.ini"
+DFLT_CONFIG_FILE = "video_processor_config.ini"
 DFLT_OVERWRITE_OPTION = "Skip existing files"  # Skip by default
-DFLT_USE_COMPRESSION_OPTION = False  # No compression by default
 GUI_TIMEOUT = 0.3 # in seconds
 UPDATE_STATUS_TIMEOUT = 1 # in seconds
 
@@ -102,12 +101,11 @@ class AudioProcessor:
   """
   def __init__(self, master):
     self.master = master
-    master.title("Audio Tempo Changer")
+    master.title("Video Compression Processor")
 
     # Pre-define elements\variables (to avoid linter warnings and errors)
     self.run_button = None
     self.overwrite_options = tk.StringVar(value=DFLT_OVERWRITE_OPTION)
-    self.use_compression_var = tk.BooleanVar(value=DFLT_USE_COMPRESSION_OPTION)
 
     # Initialize GUI variables as empty
     self.ffmpeg_path = tk.StringVar()
@@ -137,7 +135,6 @@ class AudioProcessor:
     self.skipped_files = 0
     self.status_text = None
     self.start_time = None
-    self.use_compression = False
     self.processing_complete = False
     self.processed_files_set = set()
     self.processing_complete_event = threading.Event()
@@ -154,7 +151,7 @@ class AudioProcessor:
     # Bind the save_config method to the window close event.
     self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-    self.setup_logging('INFO')  # 'INFO' or 'DEBUG' for more detailed logging
+    self.setup_logging('DEBUG')  # 'INFO' or 'DEBUG' for more detailed logging
     logging.info("AudioProcessor initialized")
 
     self.status_update_queue = queue.Queue()
@@ -178,7 +175,6 @@ class AudioProcessor:
         'dst_dir': DFLT_DST_DIR,
         'n_threads': str(DFLT_N_THREADS),
         'overwrite_option': DFLT_OVERWRITE_OPTION,  # Skip by default
-        'use_compression': str(DFLT_USE_COMPRESSION_OPTION),
       }
     else:
       try:
@@ -188,7 +184,6 @@ class AudioProcessor:
         self.src_dir.set(self.config['DEFAULT'].get('src_dir', DFLT_SRC_DIR))
         self.dst_dir.set(self.config['DEFAULT'].get('dst_dir', DFLT_DST_DIR))
         self.n_threads.set(int(self.config['DEFAULT'].get('n_threads', str(DFLT_N_THREADS))))
-        self.use_compression_var.set(self.config['DEFAULT'].get('use_compression', DFLT_USE_COMPRESSION_OPTION).lower())
         self.overwrite_options.set(self.config['DEFAULT'].get('overwrite_option', DFLT_OVERWRITE_OPTION))
       except Exception as e:
         messagebox.showerror("Config Error", f"Could not load config file: {e}")
@@ -207,7 +202,6 @@ class AudioProcessor:
     self.config['DEFAULT']['src_dir'] = self.src_dir.get()
     self.config['DEFAULT']['dst_dir'] = self.dst_dir.get()
     self.config['DEFAULT']['overwrite_option'] = self.overwrite_options.get()
-    self.config['DEFAULT']['use_compression'] = str(self.use_compression_var.get()).lower()
     try:
       with open(DFLT_CONFIG_FILE, 'w') as configfile:
         self.config.write(configfile)
@@ -245,9 +239,6 @@ class AudioProcessor:
       values=[ "Skip existing files", "Overwrite existing files", "Rename existing files"],
       state="readonly")
     self.overwrite_options_combobox.grid(row=4, column=1, sticky=tk.W)
-
-    # Compression Checkbox
-    ttk.Checkbutton(self.master, text="Use compression", variable=self.use_compression_var).grid(row=5, column=0, sticky=tk.W, padx=5)
 
     # Run button
     self.run_button = tk.Button(self.master, text="Run", command=self.start_processing, state=tk.NORMAL, height=2, width=20)
@@ -314,7 +305,7 @@ class AudioProcessor:
     msg = ""
     overwrite_option = self.overwrite_options.get()
     dst_relative_path_base, ext = os.path.splitext(relative_path)
-    dst_relative_path = dst_relative_path_base + '.mp3'
+    dst_relative_path = dst_relative_path_base + ext
     dst_file_path = os.path.join(self.dst_dir.get(), dst_relative_path)
     if os.path.exists(dst_file_path):
       if overwrite_option == "Overwrite existing files":  # Overwrite existing
@@ -351,32 +342,29 @@ class AudioProcessor:
     src_file_path = str(src_file_path)
     # Any audio file will be converted to mp3, since we are using libmp3lame codec
     base, ext = os.path.splitext(str(dst_file_path))
-    dst_file_path = base + ".mp3"
+    dst_file_path = base + ext
 
-    # Cmd example: ffmpeg.exe -i i.mp3 -codec:a libmp3lame -q:a 7 -ar 22050 -filter:a atempo=1.8 -vn -hide_banner -loglevel error -stats o.mp3 -y
+    # CMd example: ffmpeg.exe -i i.mp4  -c:v libaom-av1 -b:v 70k -crf 30 -cpu-used 8 -row-mt 1 -g 240 -aq-mode 0 -c:a aac -b:a 88k -vf scale=640:360 -pix_fmt yuv420p
     ffmpeg_command = [
       str(self.ffmpeg_path.get()),
       "-i", src_file_path,
-      "-filter:a", f"atempo={self.tempo.get()}",  # tempo audio filter
-      "-vn",  # Disable video stream
-#      "-b:a", f"{bit_rate}k",  # Fixed Bit-Rate
+      "-c:v libaom-av1",
+      "-b:v", "70k",
+      "-crf 30",
+      "-cpu-used 8",
+      "-row-mt 1",
+      " -g 240",
+      "-aq-mode 0",
+      "-c:a aac",
+      "-b:a 88k",
+       "-vf scale=640:360",
+       "-pix_fmt yuv420p",
       dst_file_path,
-      "-y",  # Force overwrite output file
       # To minimize FFmpeg’s output and only show the line with progress updates
       "-hide_banner",
       "-loglevel", "error",
       "-stats",
     ]
-    # Compression cmd example: "codec:a libmp3lame -q:a 7 -ar 22050"
-    # Full cmd example: ffmpeg.exe -i i.mp3 -codec:a libmp3lame -q:a 7 -ar 22050 -filter:a atempo=1.8 -vn -hide_banner -loglevel error -stats o.mp3 -y
-    if self.use_compression_var.get():
-      ffmpeg_compression_params = [
-        "-codec:a", "libmp3lame",  # LAME (Lame Ain't an MP3 Encoder) MP3 encoder wrapper
-        "-q:a", "7",  # quality setting for VBR
-        "-ar", "22050"  # sample rate
-      ]
-      # Insert after "src_file_path" before "-filter:a"
-      ffmpeg_command[3:3] = ffmpeg_compression_params
 
     logging.debug(f"Process File: FFMPEG command: {' '.join(ffmpeg_command)}")
     return ffmpeg_command
@@ -601,7 +589,7 @@ class AudioProcessor:
 
     for root, _, files in os.walk(src_dir):
       for file in files:
-        if file.lower().endswith(('.mp3', '.m4a', 'm4b', '.wav', '.ogg', '.flac')):
+        if file.lower().endswith(('.mp4', '.mkv', 'avi', '.webm')):
           full_path = os.path.join(root, file)
           relative_path = os.path.relpath(full_path, src_dir)
           self.queue.put((full_path, relative_path))
@@ -611,7 +599,7 @@ class AudioProcessor:
           # Skip existing files
           overwrite_option = self.overwrite_options.get()
           dst_relative_path_base, ext = os.path.splitext(relative_path)
-          dst_file_path = os.path.join(self.dst_dir.get(), dst_relative_path_base + '.mp3')
+          dst_file_path = os.path.join(self.dst_dir.get(), dst_relative_path_base + ext)
           if os.path.exists(dst_file_path) and overwrite_option == "Skip existing files":
             self.skipped_files += 1
             self.file_info[relative_path] = {"duration": 0, "skipped": True}
@@ -638,7 +626,7 @@ class AudioProcessor:
             else:
               msg += f"{self.total_dst_seconds / (60):.2f} Minutes"
             self.update_status(msg, replace=True)
-            logging.info(msg)
+#            logging.info(msg)
             self.master.update_idletasks()
             last_update_time = current_time
 
@@ -900,7 +888,7 @@ class AudioProcessor:
   #############################################################################
   def setup_logging(self, log_level='INFO'):
     """Sets up logging to a file."""
-    log_file = 'tempo_log.txt'
+    log_file = 'video_processor.txt'
 
     if log_level.upper() == 'DEBUG':
       logging.basicConfig(filename=log_file, level=logging.DEBUG,
