@@ -347,23 +347,30 @@ class AudioProcessor:
     # CMd example: ffmpeg.exe -i i.mp4  -c:v libaom-av1 -b:v 70k -crf 30 -cpu-used 8 -row-mt 1 -g 240 -aq-mode 0 -c:a aac -b:a 88k -vf scale=640:360 -pix_fmt yuv420p
     ffmpeg_command = [
       str(self.ffmpeg_path.get()),
+      # General options
       "-i", src_file_path,
-      "-c:v libaom-av1",
+      # Video options
+      "-c:v", "libaom-av1",
       "-b:v", "70k",
-      "-crf 30",
-      "-cpu-used 8",
-      "-row-mt 1",
-      " -g 240",
-      "-aq-mode 0",
-      "-c:a aac",
-      "-b:a 88k",
-       "-vf scale=640:360",
-       "-pix_fmt yuv420p",
+      "-crf", "30",
+      "-cpu-used", "8",
+      "-row-mt", "1",
+      "-g", "240",
+      "-aq-mode", "0",
+      # Audio options
+      "-c:a", "aac",
+      "-b:a", "80k",
+      # Filter options
+      "-vf", "scale=640:360",
+      "-pix_fmt", "yuv420p",
+      # Output options
       dst_file_path,
-      # To minimize FFmpeg’s output and only show the line with progress updates
+      # Progress reporting
+      "-progress", "pipe:1", # Pipe progress to stdout
+      "-nostats", # Disable default stats output
+      # Logging options
       "-hide_banner",
       "-loglevel", "error",
-      "-stats",
     ]
 
     logging.debug(f"Process File: FFMPEG command: {' '.join(ffmpeg_command)}")
@@ -372,38 +379,21 @@ class AudioProcessor:
 
   #############################################################################
   def monitor_progress(self, process, progress_bar, dst_time, relative_path):
-    """Monitors FFMPEG progress for each audio file and updates the progress bar."""
+    """Monitors FFMPEG progress by reading stdout and updates the progress bar."""
     q = queue.Queue()
 
-    def read_stderr(p, q):
-      try:
-        # Open stderr in binary mode
-        while True:
-          line = p.stderr.readline()
-          if not line:
-            break
-          try:
-            # Always treat as bytes and decode
-            if isinstance(line, bytes):
-              try:
-                line = line.decode('utf-8', errors='replace')
-              except UnicodeDecodeError:
-                line = line.decode('cp1251', errors='replace')
-            q.put(line)
-          except Exception as e:
-            logging.error(f"Error decoding line: {e}")
-            continue
-      except Exception as e:
-        logging.error(f"Error reading stderr: {e}")
-      finally:
-        q.put(None)
+    def read_stdout(p, q):
+      while True:
+        line = p.stdout.readline()
+        if not line:
+          break
+        q.put(line.decode('utf-8', errors='replace'))
+      q.put(None)
 
-    # Create process with binary output
-    stderr_thread = threading.Thread(target=read_stderr, args=(process, q))
-    stderr_thread.daemon = True
-    stderr_thread.start()
+    stdout_thread = threading.Thread(target=read_stdout, args=(process, q))
+    stdout_thread.daemon = True
+    stdout_thread.start()
 
-    processed_sz_kb = 0
     try:
       while True:
         try:
@@ -411,25 +401,23 @@ class AudioProcessor:
           if line is None:
             break
 
-          # Example output to parse:
-          # size=    2560KiB time=00:07:47.20 bitrate=  44.9kbits/s speed= 226x
-          match = re.search(r"time=(?P<hours>\d{2}):(?P<minutes>\d{2}):(?P<seconds>\d{2})\.(?P<milliseconds>\d{2})", line)
-          if match:
-            # Calculate the total seconds by converting each part to an integer/float
-            processed_seconds = (
-              int(match['hours']) * 3600 +
-              int(match['minutes']) * 60 +
-              int(match['seconds']) +
-              int(match['milliseconds']) / 100.0  # Convert milliseconds to a fraction of a second
-            )
-            with self.processed_seconds_arr_lock:
-              self.processed_seconds_arr[relative_path] = processed_seconds #Store by filename
-            progress = min(100, (processed_seconds / dst_time) * 100) if dst_time > 0 else 0 # Do not exceed 100%
-            progress_bar.set_progress(progress)
-            self.master.update_idletasks()
+          logging.debug(f"Progress line: {line.strip()}")
+          if "out_time_ms=" in line:
+            parts = line.strip().split('=')
+            if len(parts) == 2 and parts[0] == 'out_time_ms':
+              try:
+                processed_us = int(parts[1])
+                processed_seconds = processed_us / 1_000_000.0
 
-            self.update_total_progress()
-            time.sleep(GUI_TIMEOUT)
+                with self.processed_seconds_arr_lock:
+                  self.processed_seconds_arr[relative_path] = processed_seconds
+
+                progress = min(100, (processed_seconds / dst_time) * 100) if dst_time > 0 else 0
+                progress_bar.set_progress(progress)
+                self.master.update_idletasks()
+                self.update_total_progress()
+              except (ValueError, IndexError) as e:
+                logging.warning(f"Could not parse progress line: {line.strip()} - {e}")
 
         except queue.Empty:
           if process.poll() is not None:
@@ -443,8 +431,8 @@ class AudioProcessor:
       with self.processed_files_lock:
         self.processed_files += 1
       self.master.update_idletasks()
-      stderr_thread.join()
-    return processed_sz_kb
+      stdout_thread.join()
+    return
 
 
   #############################################################################
@@ -511,9 +499,7 @@ class AudioProcessor:
 
       # Get pre-calculated file info
       file_data = self.file_info[relative_path]
-      # dst_bitrate = file_data["dst_bitrate"]
       dst_time = file_data["duration"]
-      # dst_est_sz_kbt = file_data["dst_est_sz_kbt"]
 
       # Display processed filename in progress bar
       progress_bar.set_display_text(os.path.basename(dst_file_path))
@@ -525,8 +511,10 @@ class AudioProcessor:
         ffmpeg_command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,  # Use binary mode
-        bufsize=1    # Line buffered
+        # The progress is piped to stdout, so we need to make sure the stderr buffer doesn't fill up
+        # We can read it to a devnull to discard it.
+        # Note: This requires universal_newlines=False, which is the default.
+        # stderr=subprocess.DEVNULL
       )
       # Add process to active processes list
       with self.processes_lock:
@@ -580,9 +568,6 @@ class AudioProcessor:
     self.queue = queue.Queue()
     self.file_info = {}  # Dictionary to store file info
     self.processed_files_set.clear()
-    # self.processed_sz_arr.clear()
-    # self.total_dst_sz_kb = 0
-    # self.total_src_sz = 0
     self.total_dst_seconds = 0
 
     last_update_time = time.time()
