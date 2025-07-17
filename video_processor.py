@@ -18,12 +18,13 @@ import re
 DFLT_FFMPEG_PATH = "d:/PF/_Tools/ffmpeg/bin/ffmpeg.exe"  # Change this if your ffmpeg path is different.
 DFLT_SRC_DIR = ""
 DFLT_DST_DIR = ""
-DFLT_TEMPO = 1.8
+DFLT_TEMPO = 1.0
 DFLT_N_THREADS = 4
 DFLT_N_THREADS_MAX = 16
-DFLT_CONFIG_FILE = "tempo_config.ini"
+DFLT_CONFIG_FILE = "video_processor_config.ini"
+DFLT_LOG_FILE = "video_processor.log"
+VID_EXT = ('.mp4', '.mkv', 'avi', '.webm', '.flv', '.wmv')
 DFLT_OVERWRITE_OPTION = "Skip existing files"  # Skip by default
-DFLT_USE_COMPRESSION_OPTION = False  # No compression by default
 GUI_TIMEOUT = 0.3 # in seconds
 UPDATE_STATUS_TIMEOUT = 1 # in seconds
 
@@ -95,19 +96,18 @@ class CustomProgressBar(tk.Canvas):
 
 
 #############################################################################
-class AudioProcessor:
+class VideoProcessor:
   """
-  Main class for the audio tempo changer application.
+  Main class for the Video Compression Processor application.
   Handles GUI interaction, configuration, and processing logic.
   """
   def __init__(self, master):
     self.master = master
-    master.title("Audio Tempo Changer")
+    master.title("Video Compression Processor")
 
     # Pre-define elements\variables (to avoid linter warnings and errors)
     self.run_button = None
     self.overwrite_options = tk.StringVar(value=DFLT_OVERWRITE_OPTION)
-    self.use_compression_var = tk.BooleanVar(value=DFLT_USE_COMPRESSION_OPTION)
 
     # Initialize GUI variables as empty
     self.ffmpeg_path = tk.StringVar()
@@ -137,7 +137,6 @@ class AudioProcessor:
     self.skipped_files = 0
     self.status_text = None
     self.start_time = None
-    self.use_compression = False
     self.processing_complete = False
     self.processed_files_set = set()
     self.processing_complete_event = threading.Event()
@@ -155,7 +154,7 @@ class AudioProcessor:
     self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     self.setup_logging('INFO')  # 'INFO' or 'DEBUG' for more detailed logging
-    logging.info("AudioProcessor initialized")
+    logging.info("VideoProcessor initialized")
 
     self.status_update_queue = queue.Queue()
     self.status_update_thread = threading.Thread(target=self.process_status_updates, daemon=True) # Explicitly set daemon
@@ -168,7 +167,7 @@ class AudioProcessor:
 
   #############################################################################
   def load_config(self):
-    """Loads config from tempo_config.ini or uses defaults if not found."""
+    """Loads config from video_processor_config.ini or uses defaults if not found."""
     if not self.config.read(DFLT_CONFIG_FILE):
       logging.warning("Config file not found. Using defaults.")
       self.config['DEFAULT'] = {
@@ -178,7 +177,6 @@ class AudioProcessor:
         'dst_dir': DFLT_DST_DIR,
         'n_threads': str(DFLT_N_THREADS),
         'overwrite_option': DFLT_OVERWRITE_OPTION,  # Skip by default
-        'use_compression': str(DFLT_USE_COMPRESSION_OPTION),
       }
     else:
       try:
@@ -188,7 +186,6 @@ class AudioProcessor:
         self.src_dir.set(self.config['DEFAULT'].get('src_dir', DFLT_SRC_DIR))
         self.dst_dir.set(self.config['DEFAULT'].get('dst_dir', DFLT_DST_DIR))
         self.n_threads.set(int(self.config['DEFAULT'].get('n_threads', str(DFLT_N_THREADS))))
-        self.use_compression_var.set(self.config['DEFAULT'].get('use_compression', DFLT_USE_COMPRESSION_OPTION).lower())
         self.overwrite_options.set(self.config['DEFAULT'].get('overwrite_option', DFLT_OVERWRITE_OPTION))
       except Exception as e:
         messagebox.showerror("Config Error", f"Could not load config file: {e}")
@@ -196,7 +193,7 @@ class AudioProcessor:
 
   #############################################################################
   def save_config(self):
-    """Saves application configuration to tempo_config.ini."""
+    """Saves application configuration to video_processor_config.ini."""
     if self.validate_tempo():
       self.config['DEFAULT']['tempo'] = str(self.tempo.get())
     else:
@@ -207,7 +204,6 @@ class AudioProcessor:
     self.config['DEFAULT']['src_dir'] = self.src_dir.get()
     self.config['DEFAULT']['dst_dir'] = self.dst_dir.get()
     self.config['DEFAULT']['overwrite_option'] = self.overwrite_options.get()
-    self.config['DEFAULT']['use_compression'] = str(self.use_compression_var.get()).lower()
     try:
       with open(DFLT_CONFIG_FILE, 'w') as configfile:
         self.config.write(configfile)
@@ -245,9 +241,6 @@ class AudioProcessor:
       values=[ "Skip existing files", "Overwrite existing files", "Rename existing files"],
       state="readonly")
     self.overwrite_options_combobox.grid(row=4, column=1, sticky=tk.W)
-
-    # Compression Checkbox
-    ttk.Checkbutton(self.master, text="Use compression", variable=self.use_compression_var).grid(row=5, column=0, sticky=tk.W, padx=5)
 
     # Run button
     self.run_button = tk.Button(self.master, text="Run", command=self.start_processing, state=tk.NORMAL, height=2, width=20)
@@ -287,7 +280,7 @@ class AudioProcessor:
 
   #############################################################################
   def get_metadata_info(self, ffmpeg_path, src_file_path):
-    """Gets audio file metadata (Duration) using FFPROBE."""
+    """Gets media file metadata (Duration) using FFPROBE."""
     try:
       # Derive ffprobe_path from ffmpeg_path
       ffprobe_path = os.path.join(os.path.dirname(ffmpeg_path), "ffprobe.exe")
@@ -314,7 +307,7 @@ class AudioProcessor:
     msg = ""
     overwrite_option = self.overwrite_options.get()
     dst_relative_path_base, ext = os.path.splitext(relative_path)
-    dst_relative_path = dst_relative_path_base + '.mp3'
+    dst_relative_path = dst_relative_path_base + ext
     dst_file_path = os.path.join(self.dst_dir.get(), dst_relative_path)
     if os.path.exists(dst_file_path):
       if overwrite_option == "Overwrite existing files":  # Overwrite existing
@@ -346,37 +339,56 @@ class AudioProcessor:
 
   #############################################################################
   def generate_ffmpeg_command(self, src_file_path, dst_file_path):
-    """Generates the FFMPEG command with tempo and optional compression."""
+    """Generates FFMPEG command for compression with optional tempo."""
     # Convert paths to string and handle potential encoding issues
     src_file_path = str(src_file_path)
-    # Any audio file will be converted to mp3, since we are using libmp3lame codec
     base, ext = os.path.splitext(str(dst_file_path))
-    dst_file_path = base + ".mp3"
+    dst_file_path = base + ext
 
-    # Cmd example: ffmpeg.exe -i i.mp3 -codec:a libmp3lame -q:a 7 -ar 22050 -filter:a atempo=1.8 -vn -hide_banner -loglevel error -stats o.mp3 -y
+    # Cmd example:
+    # ffmpeg.exe -i i.mp4 -filter:v setpts=0.66666667*PTS,scale=640:360 -filter:a atempo=1.5 -vf scale=640:360 -pix_fmt yuv420p -c:v libaom-av1 -b:v 70k -crf 30 -cpu-used 8 -row-mt 1 -g 240 -aq-mode 0 -c:a aac -b:a 80k o.mp4 -y -progress pipe:1 -nostats -hide_banner -loglevel error
     ffmpeg_command = [
       str(self.ffmpeg_path.get()),
+      # General options
       "-i", src_file_path,
-      "-filter:a", f"atempo={self.tempo.get()}",  # tempo audio filter
-      "-vn",  # Disable video stream
-#      "-b:a", f"{bit_rate}k",  # Fixed Bit-Rate
+      # Filter options
+      "-vf", "scale=640:360",
+      "-pix_fmt", "yuv420p",
+      # Video options
+      "-c:v", "libaom-av1",
+      "-b:v", "70k",
+      "-crf", "30",
+      "-cpu-used", "8",
+      "-row-mt", "1",
+      "-g", "240",
+      "-aq-mode", "0",
+      # Audio options
+      "-c:a", "aac",
+      "-b:a", "80k",
+      # Output options
       dst_file_path,
       "-y",  # Force overwrite output file
-      # To minimize FFmpeg’s output and only show the line with progress updates
+      # Progress reporting
+      "-progress", "pipe:1", # Pipe progress to stdout
+      "-nostats", # Disable default stats output
+      # Logging options
       "-hide_banner",
       "-loglevel", "error",
-      "-stats",
     ]
-    # Compression cmd example: "codec:a libmp3lame -q:a 7 -ar 22050"
-    # Full cmd example: ffmpeg.exe -i i.mp3 -codec:a libmp3lame -q:a 7 -ar 22050 -filter:a atempo=1.8 -vn -hide_banner -loglevel error -stats o.mp3 -y
-    if self.use_compression_var.get():
-      ffmpeg_compression_params = [
-        "-codec:a", "libmp3lame",  # LAME (Lame Ain't an MP3 Encoder) MP3 encoder wrapper
-        "-q:a", "7",  # quality setting for VBR
-        "-ar", "22050"  # sample rate
+
+    if self.tempo.get() != 1.0:
+      # If tempo is not 1, we need to adjust both video and audio streams
+      # For video files we need to use tempo value for audio stream and PTS=1/tempo for video
+      PTS = 1 / self.tempo.get() # PTS is 1/tempo
+      ffmpeg_tempo_params = [
+        "-filter:v", f"setpts={PTS:.8f}*PTS,scale=640:360",
+        "-filter:a", f"atempo={self.tempo.get()}",  # tempo audio filter
       ]
-      # Insert after "src_file_path" before "-filter:a"
-      ffmpeg_command[3:3] = ffmpeg_compression_params
+      # Replace ["-vf", "scale=640:360"], use single combined video filter
+      # Cmd example:
+      # ffmpeg.exe -i i.mp4 -filter:v setpts=0.66666667*PTS,scale=640:360 -filter:a atempo=1.5 -vf scale=640:360 -pix_fmt yuv420p -c:v libaom-av1 -b:v 70k -crf 30 -cpu-used 8 -row-mt 1 -g 240 -aq-mode 0 -c:a aac -b:a 80k o.mp4 -y -progress pipe:1 -nostats -hide_banner -loglevel error
+      ffmpeg_command[3:5] = ffmpeg_tempo_params
+
 
     logging.debug(f"Process File: FFMPEG command: {' '.join(ffmpeg_command)}")
     return ffmpeg_command
@@ -384,36 +396,20 @@ class AudioProcessor:
 
   #############################################################################
   def monitor_progress(self, process, progress_bar, dst_time, relative_path):
-    """Monitors FFMPEG progress for each audio file and updates the progress bar."""
+    """Monitors FFMPEG progress by reading stdout and updates the progress bar."""
     q = queue.Queue()
 
-    def read_stderr(p, q):
-      try:
-        # Open stderr in binary mode
-        while True:
-          line = p.stderr.readline()
-          if not line:
-            break
-          try:
-            # Always treat as bytes and decode
-            if isinstance(line, bytes):
-              try:
-                line = line.decode('utf-8', errors='replace')
-              except UnicodeDecodeError:
-                line = line.decode('cp1251', errors='replace')
-            q.put(line)
-          except Exception as e:
-            logging.error(f"Error decoding line: {e}")
-            continue
-      except Exception as e:
-        logging.error(f"Error reading stderr: {e}")
-      finally:
-        q.put(None)
+    def read_stdout(p, q):
+      while True:
+        line = p.stdout.readline()
+        if not line:
+          break
+        q.put(line.decode('utf-8', errors='replace'))
+      q.put(None)
 
-    # Create process with binary output
-    stderr_thread = threading.Thread(target=read_stderr, args=(process, q))
-    stderr_thread.daemon = True
-    stderr_thread.start()
+    stdout_thread = threading.Thread(target=read_stdout, args=(process, q))
+    stdout_thread.daemon = True
+    stdout_thread.start()
 
     try:
       while True:
@@ -421,26 +417,42 @@ class AudioProcessor:
           line = q.get(timeout=GUI_TIMEOUT)
           if line is None:
             break
+#          logging.debug(f"Progress line: {line.strip()}")
 
-          # Example output to parse:
-          # size=    2560KiB time=00:07:47.20 bitrate=  44.9kbits/s speed= 226x
-          match = re.search(r"time=(?P<hours>\d{2}):(?P<minutes>\d{2}):(?P<seconds>\d{2})\.(?P<milliseconds>\d{2})", line)
-          if match:
-            # Calculate the total seconds by converting each part to an integer/float
-            processed_seconds = (
-              int(match['hours']) * 3600 +
-              int(match['minutes']) * 60 +
-              int(match['seconds']) +
-              int(match['milliseconds']) / 100.0  # Convert milliseconds to a fraction of a second
-            )
-            with self.processed_seconds_arr_lock:
-              self.processed_seconds_arr[relative_path] = processed_seconds #Store by filename
-            progress = min(100, (processed_seconds / dst_time) * 100) if dst_time > 0 else 0 # Do not exceed 100%
-            progress_bar.set_progress(progress)
-            self.master.update_idletasks()
+          # Example output
+          ########
+          # frame=5
+          # fps=0.00
+          # stream_0_0_q=0.0
+          # bitrate=  56.9kbits/s
+          # total_size=1482
+          # out_time_us=208542
+          # out_time_ms=208542
+          # out_time=00:00:00.208542
+          # dup_frames=0
+          # drop_frames=0
+          # speed=0.407x
+          # progress=continue
+          ########
+          if "out_time_ms=" in line:
+            parts = line.strip().split('=')
+            if len(parts) == 2 and parts[0] == 'out_time_ms':
+              if parts[1] == 'N/A':
+                continue
+              try:
+                processed_us = int(parts[1])
+                processed_seconds = processed_us / 1_000_000.0
 
-            self.update_total_progress()
-            time.sleep(GUI_TIMEOUT)
+                with self.processed_seconds_arr_lock:
+                  self.processed_seconds_arr[relative_path] = processed_seconds
+
+                progress = min(100, (processed_seconds / dst_time) * 100) if dst_time > 0 else 0
+                progress_bar.set_progress(progress)
+                self.master.update_idletasks()
+                self.update_total_progress()
+                logging.debug(f"processed_us={processed_us}, processed_seconds/dst_time = {processed_seconds:.1f}/{dst_time:.1f} = {(processed_seconds / dst_time * 100):.1f}" )
+              except (ValueError, IndexError) as e:
+                logging.warning(f"Could not parse progress line: {line.strip()} - {e}")
 
         except queue.Empty:
           if process.poll() is not None:
@@ -454,7 +466,7 @@ class AudioProcessor:
       with self.processed_files_lock:
         self.processed_files += 1
       self.master.update_idletasks()
-      stderr_thread.join()
+      stdout_thread.join()
     return
 
 
@@ -527,15 +539,17 @@ class AudioProcessor:
       # Display processed filename in progress bar
       progress_bar.set_display_text(os.path.basename(dst_file_path))
 
-      # Generate ffmpeg command with tempo and optional compression
+      # Generate ffmpeg command for video compression
       ffmpeg_command = self.generate_ffmpeg_command(src_file_path, dst_file_path)
       # Start FFMPEG process in binary mode for each file (n_threads)
       process = subprocess.Popen(
         ffmpeg_command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,  # Use binary mode
-        bufsize=1    # Line buffered
+        # The progress is piped to stdout, so we need to make sure the stderr buffer doesn't fill up
+        # We can read it to a devnull to discard it.
+        # Note: This requires universal_newlines=False, which is the default.
+        # stderr=subprocess.DEVNULL
       )
       # Add process to active processes list
       with self.processes_lock:
@@ -575,15 +589,15 @@ class AudioProcessor:
 
     for root, _, files in os.walk(dst_dir):
       for file in files:
-        if file.lower().endswith(('.mp3')):
+        if file.lower().endswith(VID_EXT):
           full_path = os.path.join(root, file)
           self.total_dst_sz += os.path.getsize(full_path)
           n_files += 1
 
 
   #############################################################################
-  def queue_audio_files(self):
-    """Find, count, queue audio files, and pre-calculate output sizes."""
+  def queue_media_files(self):
+    """Find, count, queue video files, and pre-calculate output sizes."""
     src_dir = self.src_dir.get()
     self.total_files = 0
     self.queue = queue.Queue()
@@ -595,7 +609,7 @@ class AudioProcessor:
 
     for root, _, files in os.walk(src_dir):
       for file in files:
-        if file.lower().endswith(('.mp3', '.m4a', 'm4b', '.wav', '.ogg', '.flac')):
+        if file.lower().endswith(VID_EXT):
           full_path = os.path.join(root, file)
           relative_path = os.path.relpath(full_path, src_dir)
           self.queue.put((full_path, relative_path))
@@ -605,7 +619,7 @@ class AudioProcessor:
           # Skip existing files
           overwrite_option = self.overwrite_options.get()
           dst_relative_path_base, ext = os.path.splitext(relative_path)
-          dst_file_path = os.path.join(self.dst_dir.get(), dst_relative_path_base + '.mp3')
+          dst_file_path = os.path.join(self.dst_dir.get(), dst_relative_path_base + ext)
           if os.path.exists(dst_file_path) and overwrite_option == "Skip existing files":
             self.skipped_files += 1
             self.file_info[relative_path] = {"duration": 0, "skipped": True}
@@ -613,9 +627,10 @@ class AudioProcessor:
             # Get audio file metadata and calculate size
             duration, success = self.get_metadata_info(self.ffmpeg_path.get(), full_path)
             if success:
-              self.file_info[relative_path] = {"duration": duration, "skipped": False}
+              duration_tempo = duration/self.tempo.get()
+              self.file_info[relative_path] = {"duration": duration_tempo, "skipped": False}
               # logging.debug(f"{relative_path}: dst_est_sz_kbt={dst_est_sz_kbt}")
-              dst_seconds = int(duration/self.tempo.get()) if self.tempo.get() > 0 else duration
+              dst_seconds = int(duration_tempo)
               self.total_dst_seconds += dst_seconds
               logging.debug(f"{relative_path}: dst_seconds={dst_seconds}")
 
@@ -784,7 +799,7 @@ class AudioProcessor:
     self.progress_bars_idx.clear()
 
     # Find, count and queue for processing all audio files
-    self.queue_audio_files()
+    self.queue_media_files()
     # Check, if there are no audio files to process
     if self.total_files == 0:
       self.finish_processing(False)
@@ -894,7 +909,7 @@ class AudioProcessor:
   #############################################################################
   def setup_logging(self, log_level='INFO'):
     """Sets up logging to a file."""
-    log_file = 'tempo_log.txt'
+    log_file = DFLT_LOG_FILE
 
     if log_level.upper() == 'DEBUG':
       logging.basicConfig(filename=log_file, level=logging.DEBUG,
@@ -974,5 +989,5 @@ class AudioProcessor:
 ###############################################################################
 if __name__ == "__main__":
   root = tk.Tk()
-  app = AudioProcessor(root)
+  app = VideoProcessor(root)
   root.mainloop()
