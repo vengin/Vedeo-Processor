@@ -1,6 +1,6 @@
-# Audio Tempo Processor
+# Video Compression Processor
 
-A Python GUI application that allows you to batch process audio files by changing their tempo with optional compression to reduce file size. The application uses FFmpeg for audio processing in multi-threading mode and supports multiple audio formats. It is most useful for processing podcasts and audiobooks.
+A Python GUI application that allows you to batch process video files (compression) to reduce file size. The application uses FFmpeg for audio processing in multi-threading mode and supports multiple audio formats. It is most useful for processing podcasts and audiobooks.
 
 ![Audio Tempo Changer Screenshot](./docs/tempo.png)
 
@@ -9,8 +9,8 @@ A Python GUI application that allows you to batch process audio files by changin
 - Change audio files tempo (with preserving the pitch)
 - Batch processing with multi-threading support
 - Optional audio compression
-- Supports multiple audio formats (MP3, M4A, M4B, WAV, OGG, FLAC)
-- Dynamic progress tracking for individual files and overall progress, based on processed size feedback from FFMPEG
+- Supports multiple audio formats (MP4, MKV, AVI, WEBM)
+- Dynamic progress tracking for individual files and overall progress, based on processed time feedback from FFMPEG
 - Configurable file overwrite behavior (Skip/Overwrite/Rename)
 - Settings persistence between sessions (saves its configuration in config file)
 
@@ -31,6 +31,7 @@ A Python GUI application that allows you to batch process audio files by changin
 ## Configuration
 
 The application saves its configuration in `tempo_config.ini` file, which includes:
+
 - FFmpeg path
 - Last used input (source) and output (destination) directories
 - Tempo value
@@ -58,6 +59,7 @@ The application saves its configuration in `tempo_config.ini` file, which includ
   - < 1: Slower playback
   - 1: Normal speed
   - > 1: Faster playback
+    >
 - **Threads**: 1-DFLT_N_THREADS_MAX concurrent processing threads
 - **Compression**: Optional audio compression to reduce file size
 - **Overwrite Options**:
@@ -68,7 +70,8 @@ The application saves its configuration in `tempo_config.ini` file, which includ
 ## FFMPEG parameters
 
 The FFMPEG command used for tempo (without compression) is the following:
-   ```
+
+```
    # Cmd example: ffmpeg.exe -i i.mp3 -codec:a libmp3lame -q:a 7 -ar 22050 -filter:a atempo=1.8 -vn -hide_banner -loglevel error -stats o.mp3 -y
   ffmpeg_command = [
     str(self.ffmpeg_path.get()),
@@ -82,9 +85,11 @@ The FFMPEG command used for tempo (without compression) is the following:
     "-loglevel", "error",
     "-stats",
   ]
-  ```
+```
+
 When **Compression** is enabled, additional parameters are added:
-  ```
+
+```
   # Compression cmd example: "codec:a libmp3lame -q:a 7 -ar 22050"
   # Full cmd example: ffmpeg.exe -i i.mp3 -codec:a libmp3lame -q:a 7 -ar 22050 -filter:a atempo=1.8 -vn -hide_banner -loglevel error -stats o.mp3 -y
   if self.use_compression_var.get():
@@ -94,7 +99,8 @@ When **Compression** is enabled, additional parameters are added:
       "-ar", "22050"  # sample rate
     ]
     # Insert after "src_file_path" before "-filter:a"
-  ```
+```
+
 ## Logging
 
 The application logs processing details and errors to `tempo_log.txt` file ('INFO' or 'DEBUG' modes).

@@ -22,6 +22,8 @@ DFLT_TEMPO = 1.0
 DFLT_N_THREADS = 4
 DFLT_N_THREADS_MAX = 16
 DFLT_CONFIG_FILE = "video_processor_config.ini"
+DFLT_LOG_FILE = "video_processor.log"
+VID_EXT = ('.mp4', '.mkv', 'avi', '.webm')
 DFLT_OVERWRITE_OPTION = "Skip existing files"  # Skip by default
 GUI_TIMEOUT = 0.3 # in seconds
 UPDATE_STATUS_TIMEOUT = 1 # in seconds
@@ -94,9 +96,9 @@ class CustomProgressBar(tk.Canvas):
 
 
 #############################################################################
-class AudioProcessor:
+class VideoProcessor:
   """
-  Main class for the audio tempo changer application.
+  Main class for the Video Compression Processor application.
   Handles GUI interaction, configuration, and processing logic.
   """
   def __init__(self, master):
@@ -152,7 +154,7 @@ class AudioProcessor:
     self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
 
     self.setup_logging('DEBUG')  # 'INFO' or 'DEBUG' for more detailed logging
-    logging.info("AudioProcessor initialized")
+    logging.info("VideoProcessor initialized")
 
     self.status_update_queue = queue.Queue()
     self.status_update_thread = threading.Thread(target=self.process_status_updates, daemon=True) # Explicitly set daemon
@@ -165,7 +167,7 @@ class AudioProcessor:
 
   #############################################################################
   def load_config(self):
-    """Loads config from tempo_config.ini or uses defaults if not found."""
+    """Loads config from video_processor_config.ini or uses defaults if not found."""
     if not self.config.read(DFLT_CONFIG_FILE):
       logging.warning("Config file not found. Using defaults.")
       self.config['DEFAULT'] = {
@@ -191,7 +193,7 @@ class AudioProcessor:
 
   #############################################################################
   def save_config(self):
-    """Saves application configuration to tempo_config.ini."""
+    """Saves application configuration to video_processor_config.ini."""
     if self.validate_tempo():
       self.config['DEFAULT']['tempo'] = str(self.tempo.get())
     else:
@@ -278,7 +280,7 @@ class AudioProcessor:
 
   #############################################################################
   def get_metadata_info(self, ffmpeg_path, src_file_path):
-    """Gets audio file metadata (Duration) using FFPROBE."""
+    """Gets media file metadata (Duration) using FFPROBE."""
     try:
       # Derive ffprobe_path from ffmpeg_path
       ffprobe_path = os.path.join(os.path.dirname(ffmpeg_path), "ffprobe.exe")
@@ -337,18 +339,21 @@ class AudioProcessor:
 
   #############################################################################
   def generate_ffmpeg_command(self, src_file_path, dst_file_path):
-    """Generates the FFMPEG command with tempo and optional compression."""
+    """Generates FFMPEG command for compression with optional tempo."""
     # Convert paths to string and handle potential encoding issues
     src_file_path = str(src_file_path)
-    # Any audio file will be converted to mp3, since we are using libmp3lame codec
     base, ext = os.path.splitext(str(dst_file_path))
     dst_file_path = base + ext
 
-    # CMd example: ffmpeg.exe -i i.mp4  -c:v libaom-av1 -b:v 70k -crf 30 -cpu-used 8 -row-mt 1 -g 240 -aq-mode 0 -c:a aac -b:a 88k -vf scale=640:360 -pix_fmt yuv420p
+    # Cmd example:
+    # ffmpeg.exe -i i.mp4 -filter:v setpts=0.66666667*PTS,scale=640:360 -filter:a atempo=1.5 -vf scale=640:360 -pix_fmt yuv420p -c:v libaom-av1 -b:v 70k -crf 30 -cpu-used 8 -row-mt 1 -g 240 -aq-mode 0 -c:a aac -b:a 80k o.mp4 -y -progress pipe:1 -nostats -hide_banner -loglevel error
     ffmpeg_command = [
       str(self.ffmpeg_path.get()),
       # General options
       "-i", src_file_path,
+      # Filter options
+      "-vf", "scale=640:360",
+      "-pix_fmt", "yuv420p",
       # Video options
       "-c:v", "libaom-av1",
       "-b:v", "70k",
@@ -360,11 +365,9 @@ class AudioProcessor:
       # Audio options
       "-c:a", "aac",
       "-b:a", "80k",
-      # Filter options
-      "-vf", "scale=640:360",
-      "-pix_fmt", "yuv420p",
       # Output options
       dst_file_path,
+      "-y",  # Force overwrite output file
       # Progress reporting
       "-progress", "pipe:1", # Pipe progress to stdout
       "-nostats", # Disable default stats output
@@ -372,6 +375,20 @@ class AudioProcessor:
       "-hide_banner",
       "-loglevel", "error",
     ]
+
+    if self.tempo.get() != 1.0:
+      # If tempo is not 1, we need to adjust the video and audio streams
+      # For video viles we need to use tempo value for audio stream and PTS=1/tempo for video
+      PTS = 1 / self.tempo.get() # PTS is 1/tempo
+      ffmpeg_tempo_params = [
+        "-filter:v", f"setpts={PTS:.8f}*PTS,scale=640:360",
+        "-filter:a", f"atempo={self.tempo.get()}",  # tempo audio filter
+      ]
+      # Replace ["-vf", "scale=640:360"], use single combined video filter
+      # Cmd example:
+      # ffmpeg.exe -i i.mp4 -filter:v setpts=0.66666667*PTS,scale=640:360 -filter:a atempo=1.5 -vf scale=640:360 -pix_fmt yuv420p -c:v libaom-av1 -b:v 70k -crf 30 -cpu-used 8 -row-mt 1 -g 240 -aq-mode 0 -c:a aac -b:a 80k o.mp4 -y -progress pipe:1 -nostats -hide_banner -loglevel error
+      ffmpeg_command[3:5] = ffmpeg_tempo_params
+
 
     logging.debug(f"Process File: FFMPEG command: {' '.join(ffmpeg_command)}")
     return ffmpeg_command
@@ -400,8 +417,23 @@ class AudioProcessor:
           line = q.get(timeout=GUI_TIMEOUT)
           if line is None:
             break
+#          logging.debug(f"Progress line: {line.strip()}")
 
-          logging.debug(f"Progress line: {line.strip()}")
+          # Example output
+          ########
+          # frame=5
+          # fps=0.00
+          # stream_0_0_q=0.0
+          # bitrate=  56.9kbits/s
+          # total_size=1482
+          # out_time_us=208542
+          # out_time_ms=208542
+          # out_time=00:00:00.208542
+          # dup_frames=0
+          # drop_frames=0
+          # speed=0.407x
+          # progress=continue
+          ########
           if "out_time_ms=" in line:
             parts = line.strip().split('=')
             if len(parts) == 2 and parts[0] == 'out_time_ms':
@@ -416,6 +448,7 @@ class AudioProcessor:
                 progress_bar.set_progress(progress)
                 self.master.update_idletasks()
                 self.update_total_progress()
+                logging.debug(f"processed_us={processed_us}, processed_seconds/dst_time = {processed_seconds:.1f}/{dst_time:.1f} = {(processed_seconds / dst_time * 100):.1f}" )
               except (ValueError, IndexError) as e:
                 logging.warning(f"Could not parse progress line: {line.strip()} - {e}")
 
@@ -504,7 +537,7 @@ class AudioProcessor:
       # Display processed filename in progress bar
       progress_bar.set_display_text(os.path.basename(dst_file_path))
 
-      # Generate ffmpeg command with tempo and optional compression
+      # Generate ffmpeg command for video compression
       ffmpeg_command = self.generate_ffmpeg_command(src_file_path, dst_file_path)
       # Start FFMPEG process in binary mode for each file (n_threads)
       process = subprocess.Popen(
@@ -554,15 +587,15 @@ class AudioProcessor:
 
     for root, _, files in os.walk(dst_dir):
       for file in files:
-        if file.lower().endswith(('.mp3')):
+        if file.lower().endswith(VID_EXT):
           full_path = os.path.join(root, file)
           self.total_dst_sz += os.path.getsize(full_path)
           n_files += 1
 
 
   #############################################################################
-  def queue_audio_files(self):
-    """Find, count, queue audio files, and pre-calculate output sizes."""
+  def queue_media_files(self):
+    """Find, count, queue video files, and pre-calculate output sizes."""
     src_dir = self.src_dir.get()
     self.total_files = 0
     self.queue = queue.Queue()
@@ -574,7 +607,7 @@ class AudioProcessor:
 
     for root, _, files in os.walk(src_dir):
       for file in files:
-        if file.lower().endswith(('.mp4', '.mkv', 'avi', '.webm')):
+        if file.lower().endswith(VID_EXT):
           full_path = os.path.join(root, file)
           relative_path = os.path.relpath(full_path, src_dir)
           self.queue.put((full_path, relative_path))
@@ -592,9 +625,10 @@ class AudioProcessor:
             # Get audio file metadata and calculate size
             duration, success = self.get_metadata_info(self.ffmpeg_path.get(), full_path)
             if success:
-              self.file_info[relative_path] = {"duration": duration, "skipped": False}
+              duration_tempo = duration/self.tempo.get()
+              self.file_info[relative_path] = {"duration": duration_tempo, "skipped": False}
               # logging.debug(f"{relative_path}: dst_est_sz_kbt={dst_est_sz_kbt}")
-              dst_seconds = int(duration/self.tempo.get()) if self.tempo.get() > 0 else duration
+              dst_seconds = int(duration_tempo)
               self.total_dst_seconds += dst_seconds
               logging.debug(f"{relative_path}: dst_seconds={dst_seconds}")
 
@@ -763,7 +797,7 @@ class AudioProcessor:
     self.progress_bars_idx.clear()
 
     # Find, count and queue for processing all audio files
-    self.queue_audio_files()
+    self.queue_media_files()
     # Check, if there are no audio files to process
     if self.total_files == 0:
       self.finish_processing(False)
@@ -873,7 +907,7 @@ class AudioProcessor:
   #############################################################################
   def setup_logging(self, log_level='INFO'):
     """Sets up logging to a file."""
-    log_file = 'video_processor.txt'
+    log_file = DFLT_LOG_FILE
 
     if log_level.upper() == 'DEBUG':
       logging.basicConfig(filename=log_file, level=logging.DEBUG,
@@ -953,5 +987,5 @@ class AudioProcessor:
 ###############################################################################
 if __name__ == "__main__":
   root = tk.Tk()
-  app = AudioProcessor(root)
+  app = VideoProcessor(root)
   root.mainloop()
