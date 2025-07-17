@@ -23,7 +23,7 @@ DFLT_N_THREADS = 4
 DFLT_N_THREADS_MAX = 16
 DFLT_CONFIG_FILE = "video_processor_config.ini"
 DFLT_LOG_FILE = "video_processor.log"
-VID_EXT = ('.mp4', '.mkv', 'avi', '.webm', '.flv', '.ts', '.wmv')
+VID_EXT = ('.mp4', '.mkv', 'avi', '.webm', '.flv', '.wmv')
 DFLT_OVERWRITE_OPTION = "Skip existing files"  # Skip by default
 GUI_TIMEOUT = 0.3 # in seconds
 UPDATE_STATUS_TIMEOUT = 1 # in seconds
@@ -153,7 +153,7 @@ class VideoProcessor:
     # Bind the save_config method to the window close event.
     self.master.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-    self.setup_logging('DEBUG')  # 'INFO' or 'DEBUG' for more detailed logging
+    self.setup_logging('INFO')  # 'INFO' or 'DEBUG' for more detailed logging
     logging.info("VideoProcessor initialized")
 
     self.status_update_queue = queue.Queue()
@@ -377,8 +377,8 @@ class VideoProcessor:
     ]
 
     if self.tempo.get() != 1.0:
-      # If tempo is not 1, we need to adjust the video and audio streams
-      # For video viles we need to use tempo value for audio stream and PTS=1/tempo for video
+      # If tempo is not 1, we need to adjust both video and audio streams
+      # For video files we need to use tempo value for audio stream and PTS=1/tempo for video
       PTS = 1 / self.tempo.get() # PTS is 1/tempo
       ffmpeg_tempo_params = [
         "-filter:v", f"setpts={PTS:.8f}*PTS,scale=640:360",
