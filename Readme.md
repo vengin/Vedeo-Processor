@@ -1,6 +1,6 @@
 # Audio Tempo Processor
 
-A Python GUI application that allows you to batch process audio files by changing their tempo with optional compression to reduce file size. The application uses FFmpeg for audio processing in multi-threading mode and supports multiple audio formats. It is most useful for processing podcasts and audiobooks.
+A Python GUI application for audio files batch processssing, changing their tempo with optional compression to reduce file size. The application uses FFmpeg (and FFprobe) for audio processing in multi-threading mode and supports multiple audio formats. It is most useful for processing podcasts and audiobooks.
 
 ![Audio Tempo Changer Screenshot](./docs/tempo.png)
 
@@ -10,7 +10,7 @@ A Python GUI application that allows you to batch process audio files by changin
 - Batch processing with multi-threading support
 - Optional audio compression
 - Supports multiple audio formats (MP3, M4A, M4B, WAV, OGG, FLAC)
-- Dynamic progress tracking for individual files and overall progress, based on processed size feedback from FFMPEG
+- Dynamic progress tracking for individual files and overall progress, based on processed time feedback from FFMPEG
 - Configurable file overwrite behavior (Skip/Overwrite/Rename)
 - Settings persistence between sessions (saves its configuration in config file)
 
@@ -67,7 +67,7 @@ The application saves its configuration in `tempo_config.ini` file, which includ
 
 ## FFMPEG parameters
 
-The FFMPEG command used for tempo (without compression) is the following:
+The FFMPEG command used for **tempo (without compression)** is the following:
    ```
    # Cmd example: ffmpeg.exe -i i.mp3 -codec:a libmp3lame -q:a 7 -ar 22050 -filter:a atempo=1.8 -vn -hide_banner -loglevel error -stats o.mp3 -y
   ffmpeg_command = [
@@ -97,4 +97,4 @@ When **Compression** is enabled, additional parameters are added:
   ```
 ## Logging
 
-The application logs processing details and errors to `tempo_log.txt` file ('INFO' or 'DEBUG' modes).
+The application logs processing details and errors to `tempo.log` file ('INFO' or 'DEBUG' modes).

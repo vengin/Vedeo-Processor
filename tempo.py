@@ -22,6 +22,7 @@ DFLT_TEMPO = 1.8
 DFLT_N_THREADS = 4
 DFLT_N_THREADS_MAX = 16
 DFLT_CONFIG_FILE = "tempo_config.ini"
+DFLT_LOG_FILE = "tempo.log"
 DFLT_OVERWRITE_OPTION = "Skip existing files"  # Skip by default
 DFLT_USE_COMPRESSION_OPTION = False  # No compression by default
 GUI_TIMEOUT = 0.3 # in seconds
@@ -102,7 +103,7 @@ class AudioProcessor:
   """
   def __init__(self, master):
     self.master = master
-    master.title("Audio Tempo Changer")
+    master.title("Audio Tempo Processor")
 
     # Pre-define elements\variables (to avoid linter warnings and errors)
     self.run_button = None
@@ -415,7 +416,6 @@ class AudioProcessor:
     stderr_thread.daemon = True
     stderr_thread.start()
 
-    processed_sz_kb = 0
     try:
       while True:
         try:
@@ -456,7 +456,7 @@ class AudioProcessor:
         self.processed_files += 1
       self.master.update_idletasks()
       stderr_thread.join()
-    return processed_sz_kb
+    return
 
 
   #############################################################################
@@ -523,9 +523,7 @@ class AudioProcessor:
 
       # Get pre-calculated file info
       file_data = self.file_info[relative_path]
-      # dst_bitrate = file_data["dst_bitrate"]
       dst_time = file_data["duration"]
-      # dst_est_sz_kbt = file_data["dst_est_sz_kbt"]
 
       # Display processed filename in progress bar
       progress_bar.set_display_text(os.path.basename(dst_file_path))
@@ -592,9 +590,6 @@ class AudioProcessor:
     self.queue = queue.Queue()
     self.file_info = {}  # Dictionary to store file info
     self.processed_files_set.clear()
-    # self.processed_sz_arr.clear()
-    # self.total_dst_sz_kb = 0
-    # self.total_src_sz = 0
     self.total_dst_seconds = 0
 
     last_update_time = time.time()
@@ -619,9 +614,10 @@ class AudioProcessor:
             # Get audio file metadata and calculate size
             duration, success = self.get_metadata_info(self.ffmpeg_path.get(), full_path)
             if success:
-              self.file_info[relative_path] = {"duration": duration, "skipped": False}
+              duration_tempo = duration/self.tempo.get()
+              self.file_info[relative_path] = {"duration": duration_tempo, "skipped": False}
               # logging.debug(f"{relative_path}: dst_est_sz_kbt={dst_est_sz_kbt}")
-              dst_seconds = int(duration/self.tempo.get()) if self.tempo.get() > 0 else duration
+              dst_seconds = int(duration_tempo)
               self.total_dst_seconds += dst_seconds
               logging.debug(f"{relative_path}: dst_seconds={dst_seconds}")
 
@@ -638,7 +634,7 @@ class AudioProcessor:
             else:
               msg += f"{self.total_dst_seconds / (60):.2f} Minutes"
             self.update_status(msg, replace=True)
-            logging.info(msg)
+#            logging.info(msg)
             self.master.update_idletasks()
             last_update_time = current_time
 
@@ -877,7 +873,7 @@ class AudioProcessor:
       msg += f" in {processing_time_str}."
     # Add Compression Ratio
     self.count_dst_files_sz()
-    total_dst_sz_mb = self.total_dst_sz / (1024 * 1024)  #self.total_dst_sz_kb / 1024
+    total_dst_sz_mb = self.total_dst_sz / (1024 * 1024)
     total_src_sz_mb = self.total_src_sz / (1024 * 1024)
     if total_dst_sz_mb:
       msg += f" Compression ratio {(total_src_sz_mb / total_dst_sz_mb):.2f}."
@@ -900,7 +896,7 @@ class AudioProcessor:
   #############################################################################
   def setup_logging(self, log_level='INFO'):
     """Sets up logging to a file."""
-    log_file = 'tempo_log.txt'
+    log_file = DFLT_LOG_FILE
 
     if log_level.upper() == 'DEBUG':
       logging.basicConfig(filename=log_file, level=logging.DEBUG,
