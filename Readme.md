@@ -2,7 +2,7 @@
 
 A Python GUI application for video files batch processing, with compression and tempo (speed) change, to reduce file size. The application uses FFmpeg (and FFprobe) for video processing in multi-threading mode and supports multiple video formats.
 
-![Audio Tempo Changer Screenshot](./docs/tempo.png)
+![Audio Tempo Changer Screenshot](./docs/Video-Compression-Processor(GUI).png)
 
 ## Features
 
