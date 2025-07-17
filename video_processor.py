@@ -437,6 +437,8 @@ class VideoProcessor:
           if "out_time_ms=" in line:
             parts = line.strip().split('=')
             if len(parts) == 2 and parts[0] == 'out_time_ms':
+              if parts[1] == 'N/A':
+                continue
               try:
                 processed_us = int(parts[1])
                 processed_seconds = processed_us / 1_000_000.0
