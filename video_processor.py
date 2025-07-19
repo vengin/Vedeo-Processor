@@ -13,6 +13,7 @@ import queue
 import time
 import logging
 import re
+import psutil
 
 # Default values for the application
 DFLT_FFMPEG_PATH = "d:/PF/_Tools/ffmpeg/bin/ffmpeg.exe"  # Change this if your ffmpeg path is different.
@@ -39,6 +40,7 @@ class CustomProgressBar(tk.Canvas):
     super().__init__(master, *args, **kwargs)
     self.progress_var = tk.DoubleVar()
     self.filename_var = tk.StringVar()
+    self.paused = tk.BooleanVar(value=False)
 
     # Set bald font based on parameter
     self.text_font = ('TkDefaultFont', 9, 'bold') if use_bold_font else ('TkDefaultFont', 9)
@@ -69,7 +71,10 @@ class CustomProgressBar(tk.Canvas):
 
     # Draw progress fill inside the border
     if fill_width > 0:
-      self.create_rectangle(2, 2, fill_width+2, height-2, fill="#A8D8A8")#, outline="")
+      fill_color = "#A8D8A8"  # Default green
+      if self.paused.get():
+        fill_color = "#F8EA90"  # Yellow for paused
+      self.create_rectangle(2, 2, fill_width + 2, height - 2, fill=fill_color)
 
     # Draw centered text
     self.create_text(
@@ -140,8 +145,9 @@ class VideoProcessor:
     self.processing_complete = False
     self.processed_files_set = set()
     self.processing_complete_event = threading.Event()
-    self.active_processes = []  # Add list to track FFMPEG processes
+    self.active_processes = {}  # Change to a dictionary {pid: process_object}
     self.processes_lock = threading.Lock()  # Add lock for thread-safe access
+    self.progress_bar_to_pid = {}  # Maps progress bar to process pid
 
     # Create GUI elements
     self.create_widgets()
@@ -553,7 +559,8 @@ class VideoProcessor:
       )
       # Add process to active processes list
       with self.processes_lock:
-        self.active_processes.append(process)
+        self.active_processes[process.pid] = process
+        self.progress_bar_to_pid[progress_bar] = process.pid
 
       # Monitor and update each audio file processing progress
       self.monitor_progress(process, progress_bar, dst_time, relative_path)
@@ -561,8 +568,11 @@ class VideoProcessor:
 
       # Remove process from active processes list
       with self.processes_lock:
-        if process in self.active_processes:
-          self.active_processes.remove(process)
+        if process.pid in self.active_processes:
+          del self.active_processes[process.pid]
+        if progress_bar in self.progress_bar_to_pid:
+          del self.progress_bar_to_pid[progress_bar]
+
 
     except Exception as e:
       msg = f"Error processing {relative_path}: {e}"
@@ -573,9 +583,10 @@ class VideoProcessor:
     finally:
       # Ensure process is removed from active processes even if error occurs
       with self.processes_lock:
-        #if process and process in self.active_processes:
-        if process in self.active_processes:
-          self.active_processes.remove(process)
+        if process and process.pid in self.active_processes:
+          del self.active_processes[process.pid]
+        if progress_bar in self.progress_bar_to_pid:
+            del self.progress_bar_to_pid[progress_bar]
       if not self.is_shutting_down:
         self.update_total_progress() # Update total progress after each file
 
@@ -818,6 +829,7 @@ class VideoProcessor:
       # Create progress bar
       progress_bar = CustomProgressBar(self.master, width=1202, height=20)
       progress_bar.grid(row=9 + i, column=1)
+      progress_bar.bind("<Button-3>", lambda event, pb=progress_bar: self.toggle_pause(pb))
       self.progress_bars.append(progress_bar)
 
     # Create overall (total) progress bar
@@ -972,18 +984,46 @@ class VideoProcessor:
   def kill_active_processes(self):
     """Terminates all active FFMPEG processes."""
     with self.processes_lock:
-      for process in self.active_processes:
+      for pid, process in self.active_processes.items():
         try:
-          if process.poll() is None:  # Check if process is still running
-            process.terminate()  # Try graceful termination first
-            try:
-              process.wait(timeout=1)  # Wait for termination
-            except subprocess.TimeoutExpired:
-              process.kill()  # Force kill if termination takes too long
-              process.wait()
+          p = psutil.Process(pid)
+          if p.status() != psutil.STATUS_ZOMBIE:
+            p.kill()  # Force kill
+        except psutil.NoSuchProcess:
+          logging.warning(f"Process with PID {pid} not found, might have already finished.")
         except Exception as e:
-          logging.error(f"Error killing process: {e}")
+          logging.error(f"Error killing process {pid}: {e}")
       self.active_processes.clear()
+
+
+  #############################################################################
+  def toggle_pause(self, progress_bar):
+    """Toggles the paused state of a process."""
+    with self.processes_lock:
+      pid = self.progress_bar_to_pid.get(progress_bar)
+      if not pid:
+        return
+
+      try:
+        p = psutil.Process(pid)
+        filename = progress_bar.filename_var.get()
+        if p.status() == psutil.STATUS_STOPPED:
+          p.resume()
+          progress_bar.paused.set(False)
+          msg = f"Resumed processing {filename}"
+          logging.info(msg)
+          self.status_update_queue.put(msg)
+        else:
+          p.suspend()
+          progress_bar.paused.set(True)
+          msg = f"Paused processing {filename}"
+          logging.info(msg)
+          self.status_update_queue.put(msg)
+        progress_bar.draw_progress_bar()  # Redraw to reflect color change
+      except psutil.NoSuchProcess:
+        logging.warning(f"Process with PID {pid} not found for pause/resume.")
+      except Exception as e:
+        logging.error(f"Error toggling pause for process {pid}: {e}")
 
 
 ###############################################################################
