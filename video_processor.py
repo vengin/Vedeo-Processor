@@ -1006,14 +1006,19 @@ class VideoProcessor:
 
       try:
         p = psutil.Process(pid)
+        filename = progress_bar.filename_var.get()
         if p.status() == psutil.STATUS_STOPPED:
           p.resume()
           progress_bar.paused.set(False)
-          logging.info(f"Resumed process {pid}")
+          msg = f"Resumed processing {filename}"
+          logging.info(msg)
+          self.status_update_queue.put(msg)
         else:
           p.suspend()
           progress_bar.paused.set(True)
-          logging.info(f"Paused process {pid}")
+          msg = f"Paused processing {filename}"
+          logging.info(msg)
+          self.status_update_queue.put(msg)
         progress_bar.draw_progress_bar()  # Redraw to reflect color change
       except psutil.NoSuchProcess:
         logging.warning(f"Process with PID {pid} not found for pause/resume.")
