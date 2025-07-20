@@ -57,7 +57,7 @@ The application saves its configuration in `tempo_config.ini` file, which includ
 - **Tempo**: Value between 0 and 2
   - < 1: Slower playback
   - 1: Normal speed
-  - > 1: Faster playback
+  - \> 1: Faster playback
 - **Threads**: 1-DFLT_N_THREADS_MAX concurrent processing threads
 - **Compression**: Optional audio compression to reduce file size
 - **Overwrite Options**:

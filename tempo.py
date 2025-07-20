@@ -23,6 +23,7 @@ DFLT_N_THREADS = 4
 DFLT_N_THREADS_MAX = 16
 DFLT_CONFIG_FILE = "tempo_config.ini"
 DFLT_LOG_FILE = "tempo.log"
+AUD_EXT = ('.mp3', '.m4a', 'm4b', '.wav', '.ogg', '.flac', '.wav')
 DFLT_OVERWRITE_OPTION = "Skip existing files"  # Skip by default
 DFLT_USE_COMPRESSION_OPTION = False  # No compression by default
 GUI_TIMEOUT = 0.3 # in seconds
@@ -596,7 +597,7 @@ class AudioProcessor:
 
     for root, _, files in os.walk(src_dir):
       for file in files:
-        if file.lower().endswith(('.mp3', '.m4a', 'm4b', '.wav', '.ogg', '.flac')):
+        if file.lower().endswith(AUD_EXT):
           full_path = os.path.join(root, file)
           relative_path = os.path.relpath(full_path, src_dir)
           self.queue.put((full_path, relative_path))
@@ -884,9 +885,10 @@ class AudioProcessor:
     self.run_button.config(state=tk.NORMAL)
 
     # 100%
-    total_progress_message = f"100%  {self.processed_files+self.skipped_files}/{self.total_files}"
-    self.total_progress.set_progress(100)
-    self.total_progress.set_display_text(total_progress_message)
+    if hasattr(self, 'total_progress'):
+      total_progress_message = f"100%  {self.processed_files+self.skipped_files}/{self.total_files}"
+      self.total_progress.set_progress(100)
+      self.total_progress.set_display_text(total_progress_message)
 
     # Clear the threads list
     self.threads.clear()
