@@ -12,7 +12,8 @@ A Python GUI application for video files batch processing, with compression and 
 - Supports multiple video formats (MP4, MKV, AVI, WEBM, FLV, WMV)
 - Dynamic progress tracking for individual files and overall progress, based on processed time feedback from FFMPEG
 - Configurable file overwrite behavior (Skip/Overwrite/Rename)
-- Settings persistence between sessions (saves its configuration in config file)
+- Settings persistence between sessions (saves its configuration in a config file)
+- File processsing Cancelation🔴 (left double-click) or Pausing🟡 / Resuming🟢 (right-click)
 
 ## Requirements
 
@@ -21,12 +22,13 @@ A Python GUI application for video files batch processing, with compression and 
 - Python packages:
   - tkinter (usually comes with Python)
   - configparser
+  - psutil
 
 ## Installation
 
 1. Ensure Python 3.x is installed on your system
 2. Download and install FFmpeg (with FFprobe)
-3. Download `vidoe_processor.py` and run it
+3. Download `video_processor.py` and run it
 
 ## Configuration
 
@@ -50,12 +52,23 @@ The application saves its configuration in `video_processor_config.ini` file, wh
    - Rename existing files
 7. Click "Run" to start processing
 
+## Interaction
+
+- **Pause/Resume**: Right-click on a file progress bar in processing list to Pause🟡 or Resume🟢 its processing.
+- **Cancel**: Double-click on a file progress bar in processing list to Cancel🔴 its processing.
+
+| File Processing Status      | Progress Bar Color      |
+| ------------- | ------------- |
+| Normal processing; Resumed; next after Canceled | 🟢 Green |
+| Paused (right-click); or when "Cancel Processing?" message box is shown after a left double-click | 🟡 Yellow |
+| Canceled (and there are no next files to schedule) | 🔴 Red |
+
 ## Processing Options
 
 - **Tempo**: Value between 0 and 2
   - < 1: Slower playback
   - 1: Normal speed
-  - > 1: Faster playback
+  - \> 1: Faster playback
 - **Threads**: 1-DFLT_N_THREADS_MAX concurrent processing threads
 - **Overwrite Options**:
   - Skip: Preserve existing files
@@ -72,30 +85,30 @@ The FFMPEG command used for **compression (without tempo)** is the following:
 ffmpeg_command = [
   str(self.ffmpeg_path.get()),
   # General options
-  "-i", src_file_path,
+  "-i", src_file_path,            # Input file
   # Filter options
-  "-vf", "scale=640:360",
-  "-pix_fmt", "yuv420p",
+  "-vf", "scale=640:360",         # Video filter for scaling
+  "-pix_fmt", "yuv420p",          # Pixel format for compatibility
   # Video options
-  "-c:v", "libaom-av1",
-  "-b:v", "70k",
-  "-crf", "30",
-  "-cpu-used", "8",
-  "-row-mt", "1",
-  "-g", "240",
-  "-aq-mode", "0",
+  "-c:v", "libaom-av1",           # Video codec: AV1
+  "-b:v", "70k",                  # Video bitrate
+  "-crf", "30",                   # Constant Rate Factor (quality)
+  "-cpu-used", "8",               # CPU usage for encoding speed
+  "-row-mt", "1",                 # Enable row-based multithreading
+  "-g", "240",                    # Group of pictures (GOP) size
+  "-aq-mode", "0",                # Adaptive quantization mode
   # Audio options
-  "-c:a", "aac",
-  "-b:a", "80k",
+  "-c:a", "aac",                  # Audio codec: AAC
+  "-b:a", "80k",                  # Audio bitrate
   # Output options
   dst_file_path,
-  "-y",  # Force overwrite output file
+  "-y",                           # Force overwrite output file
   # Progress reporting
-  "-progress", "pipe:1", # Pipe progress to stdout
-  "-nostats", # Disable default stats output
+  "-progress", "pipe:1",          # Pipe progress to stdout
+  "-nostats",                     # Disable default stats output
   # Logging options
-  "-hide_banner",
-  "-loglevel", "error",
+  "-hide_banner",                 # Hide FFmpeg banner
+  "-loglevel", "error",           # Set log level to error
 ]
 ```
 
@@ -106,8 +119,8 @@ When **Tempo** is used (Tempo != 1), additional parameters are added:
 # For video files we need to use tempo value for audio stream and PTS=1/tempo for video
 PTS = 1 / self.tempo.get() # PTS is 1/tempo
 ffmpeg_tempo_params = [
-  "-filter:v", f"setpts={PTS:.8f}*PTS,scale=640:360",
-  "-filter:a", f"atempo={self.tempo.get()}",  # tempo audio filter
+  "-filter:v", f"setpts={PTS:.8f}*PTS,scale=640:360", # Video filter for changing speed and scaling
+  "-filter:a", f"atempo={self.tempo.get()}",          # Audio filter for changing tempo
 ]
 # Replace ["-vf", "scale=640:360"], use single combined video filter
 # Cmd example:

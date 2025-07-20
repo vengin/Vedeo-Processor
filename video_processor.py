@@ -12,7 +12,6 @@ import threading
 import queue
 import time
 import logging
-import re
 import psutil
 
 # Default values for the application
@@ -1030,7 +1029,7 @@ class VideoProcessor:
         p.suspend()
         progress_bar.paused.set(True)
         progress_bar.draw_progress_bar()
-        if messagebox.askyesno("Confirm Kill", f"Are you sure you want to kill the process for {filename}?"):
+        if messagebox.askyesno("Cancel Processing?", f"Are you sure you want to Cancel process for {filename}?"):
           try:
             p.kill()
             # Wait for the process to terminate to release file locks
