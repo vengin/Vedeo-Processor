@@ -1028,7 +1028,16 @@ class VideoProcessor:
         progress_bar.paused.set(True)
         progress_bar.draw_progress_bar()
         if messagebox.askyesno("Confirm Kill", f"Are you sure you want to kill the process for {filename}?"):
-          p.kill()
+          try:
+            p.kill()
+            # Wait for the process to terminate to release file locks
+            p.wait(timeout=3)
+          except psutil.NoSuchProcess:
+            # Process already terminated, which is fine.
+            pass
+          except psutil.TimeoutExpired:
+            logging.warning(f"Process {pid} did not terminate within the timeout.")
+
           progress_bar.cancelled.set(True)
           progress_bar.draw_progress_bar()
           self.cancelled_files += 1
@@ -1042,8 +1051,11 @@ class VideoProcessor:
             if os.path.exists(dst_file_path):
               base, ext = os.path.splitext(dst_file_path)
               new_path = f"{base}_cancelled{ext}"
-              os.rename(dst_file_path, new_path)
-              logging.info(f"Renamed partial file to {new_path}")
+              try:
+                os.rename(dst_file_path, new_path)
+                logging.info(f"Renamed partial file to {new_path}")
+              except OSError as e:
+                logging.error(f"Failed to rename partial file {dst_file_path}: {e}")
 
           # Remove the process from active tracking
           if pid in self.active_processes:
@@ -1062,6 +1074,7 @@ class VideoProcessor:
       except Exception as e:
         logging.error(f"Error killing process {pid}: {e}")
 
+
   #############################################################################
   def start_new_task_if_needed(self):
     """Checks if a new task can be started and starts one."""
@@ -1075,6 +1088,7 @@ class VideoProcessor:
           thread.start()
           self.active_threads += 1
           break
+
 
   #############################################################################
   def toggle_pause(self, progress_bar):
