@@ -42,6 +42,7 @@ class CustomProgressBar(tk.Canvas):
     self.filename_var = tk.StringVar()
     self.paused = tk.BooleanVar(value=False)
     self.cancelled = tk.BooleanVar(value=False)
+    self.relative_path = None
 
     # Set bald font based on parameter
     self.text_font = ('TkDefaultFont', 9, 'bold') if use_bold_font else ('TkDefaultFont', 9)
@@ -502,7 +503,7 @@ class VideoProcessor:
       total_progress_percentage = min(100, total_progress_percentage)
       logging.debug(f"ttl_prcssd_seconds={int(total_processed_seconds)}, ttl_seconds={int(self.total_dst_seconds)}, prgrss={total_progress_percentage}")
 
-      total_progress_message = f"{total_progress_percentage}%  {self.processed_files+self.skipped_files+self.cancelled_files}/{self.total_files}"
+      total_progress_message = f"{total_progress_percentage}%  {self.processed_files+self.skipped_files + self.cancelled_files}/{self.total_files}"
 
       # Wrap GUI updates in try-except
       try:
@@ -550,6 +551,7 @@ class VideoProcessor:
 
       # Display processed filename in progress bar
       progress_bar.set_display_text(os.path.basename(dst_file_path))
+      progress_bar.relative_path = relative_path
 
       # Generate ffmpeg command for video compression
       ffmpeg_command = self.generate_ffmpeg_command(src_file_path, dst_file_path)
@@ -1013,15 +1015,19 @@ class VideoProcessor:
   #############################################################################
   def confirm_and_kill_process(self, progress_bar):
     """Confirms and kills a process, then starts the next file."""
+
     with self.processes_lock:
       pid = self.progress_bar_to_pid.get(progress_bar)
       if not pid:
         return
 
       filename = progress_bar.filename_var.get()
-      if messagebox.askyesno("Confirm Kill", f"Are you sure you want to kill the process for {filename}?"):
-        try:
-          p = psutil.Process(pid)
+      try:
+        p = psutil.Process(pid)
+        p.suspend()
+        progress_bar.paused.set(True)
+        progress_bar.draw_progress_bar()
+        if messagebox.askyesno("Confirm Kill", f"Are you sure you want to kill the process for {filename}?"):
           p.kill()
           progress_bar.cancelled.set(True)
           progress_bar.draw_progress_bar()
@@ -1029,6 +1035,15 @@ class VideoProcessor:
           msg = f"Cancelled processing {filename}"
           logging.info(msg)
           self.status_update_queue.put(msg)
+
+          # Rename the partially processed file
+          if progress_bar.relative_path:
+            dst_file_path = os.path.join(self.dst_dir.get(), progress_bar.relative_path)
+            if os.path.exists(dst_file_path):
+              base, ext = os.path.splitext(dst_file_path)
+              new_path = f"{base}_cancelled{ext}"
+              os.rename(dst_file_path, new_path)
+              logging.info(f"Renamed partial file to {new_path}")
 
           # Remove the process from active tracking
           if pid in self.active_processes:
@@ -1038,11 +1053,14 @@ class VideoProcessor:
 
           # Since a slot is now free, try to start a new task
           self.start_new_task_if_needed()
+        else:
+          p.resume()
+          progress_bar.paused.set(False)
 
-        except psutil.NoSuchProcess:
-          logging.warning(f"Process with PID {pid} not found for cancellation.")
-        except Exception as e:
-          logging.error(f"Error killing process {pid}: {e}")
+      except psutil.NoSuchProcess:
+        logging.warning(f"Process with PID {pid} not found for cancellation.")
+      except Exception as e:
+        logging.error(f"Error killing process {pid}: {e}")
 
   #############################################################################
   def start_new_task_if_needed(self):
