@@ -698,13 +698,16 @@ class VideoProcessor:
   def worker(self, thread_index):
     """Worker function for each thread, processing files from the queue."""
     progress_bar = self.progress_bars[thread_index]
-    progress_bar.cancelled.set(False)
-    progress_bar.draw_progress_bar()
 
     while not self.is_shutting_down:  # Check shutdown flag
       try:
         # Reduced timeout to make thread more responsive to shutdown
         file_path, relative_path = self.queue.get(timeout=0.1)
+
+        # Reset progress bar state for the new file
+        progress_bar.cancelled.set(False)
+        progress_bar.paused.set(False)
+        progress_bar.draw_progress_bar()
 
         # Check shutdown flag immediately after getting item
         if file_path is None or self.is_shutting_down:
