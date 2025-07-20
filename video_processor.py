@@ -41,6 +41,7 @@ class CustomProgressBar(tk.Canvas):
     self.progress_var = tk.DoubleVar()
     self.filename_var = tk.StringVar()
     self.paused = tk.BooleanVar(value=False)
+    self.cancelled = tk.BooleanVar(value=False)
 
     # Set bald font based on parameter
     self.text_font = ('TkDefaultFont', 9, 'bold') if use_bold_font else ('TkDefaultFont', 9)
@@ -74,6 +75,8 @@ class CustomProgressBar(tk.Canvas):
       fill_color = "#A8D8A8"  # Default green
       if self.paused.get():
         fill_color = "#F8EA90"  # Yellow for paused
+      if self.cancelled.get():
+        fill_color = "#FF9999"  # Red for cancelled
       self.create_rectangle(2, 2, fill_width + 2, height - 2, fill=fill_color)
 
     # Draw centered text
@@ -140,6 +143,7 @@ class VideoProcessor:
     self.total_src_sz = 0
     self.error_files = 0
     self.skipped_files = 0
+    self.cancelled_files = 0
     self.status_text = None
     self.start_time = None
     self.processing_complete = False
@@ -468,9 +472,11 @@ class VideoProcessor:
     except Exception as e:
       logging.exception(f"Error monitoring progress for {relative_path}: {e}")
     finally:
-      progress_bar.set_progress(100)
-      with self.processed_files_lock:
-        self.processed_files += 1
+      # Check if the process was cancelled
+      if not progress_bar.cancelled.get():
+        progress_bar.set_progress(100)
+        with self.processed_files_lock:
+          self.processed_files += 1
       self.master.update_idletasks()
       stdout_thread.join()
     return
@@ -496,7 +502,7 @@ class VideoProcessor:
       total_progress_percentage = min(100, total_progress_percentage)
       logging.debug(f"ttl_prcssd_seconds={int(total_processed_seconds)}, ttl_seconds={int(self.total_dst_seconds)}, prgrss={total_progress_percentage}")
 
-      total_progress_message = f"{total_progress_percentage}%  {self.processed_files+self.skipped_files}/{self.total_files}"
+      total_progress_message = f"{total_progress_percentage}%  {self.processed_files+self.skipped_files+self.cancelled_files}/{self.total_files}"
 
       # Wrap GUI updates in try-except
       try:
@@ -507,8 +513,8 @@ class VideoProcessor:
         return
 
       # When all files processed, set progress to 100% (might be a bit smaller/larger otherwise)
-      if self.processed_files == self.total_files:
-        total_progress_message = f"100%  {self.processed_files+self.skipped_files}/{self.total_files}"
+      if self.processed_files + self.skipped_files + self.cancelled_files == self.total_files:
+        total_progress_message = f"100%  {self.processed_files+self.skipped_files+self.cancelled_files}/{self.total_files}"
         self.total_progress.set_progress(100)
         self.total_progress.set_display_text(total_progress_message)
         try:
@@ -689,6 +695,10 @@ class VideoProcessor:
   #############################################################################
   def worker(self, thread_index):
     """Worker function for each thread, processing files from the queue."""
+    progress_bar = self.progress_bars[thread_index]
+    progress_bar.cancelled.set(False)
+    progress_bar.draw_progress_bar()
+
     while not self.is_shutting_down:  # Check shutdown flag
       try:
         # Reduced timeout to make thread more responsive to shutdown
@@ -699,7 +709,7 @@ class VideoProcessor:
           self.queue.task_done()
           break
 
-        self.process_file(file_path, relative_path, self.progress_bars[thread_index])
+        self.process_file(file_path, relative_path, progress_bar)
         self.queue.task_done()
 
         # Check if this was the last file
@@ -830,6 +840,7 @@ class VideoProcessor:
       progress_bar = CustomProgressBar(self.master, width=1202, height=20)
       progress_bar.grid(row=9 + i, column=1)
       progress_bar.bind("<Button-3>", lambda event, pb=progress_bar: self.toggle_pause(pb))
+      progress_bar.bind("<Double-1>", lambda event, pb=progress_bar: self.confirm_and_kill_process(pb))
       self.progress_bars.append(progress_bar)
 
     # Create overall (total) progress bar
@@ -893,6 +904,9 @@ class VideoProcessor:
     # Add non-zero Error files
     if self.error_files:
       msg += f", {self.error_files} Errors"
+    # Add non-zero Cancelled files
+    if self.cancelled_files:
+      msg += f", {self.cancelled_files} Cancelled"
     # Add Processing time
     if (processing_time != 0) and (self.skipped_files < self.total_files):
       msg += f" in {processing_time_str}."
@@ -909,7 +923,7 @@ class VideoProcessor:
     self.run_button.config(state=tk.NORMAL)
 
     # 100%
-    total_progress_message = f"100%  {self.processed_files+self.skipped_files}/{self.total_files}"
+    total_progress_message = f"100%  {self.processed_files+self.skipped_files+self.cancelled_files}/{self.total_files}"
     self.total_progress.set_progress(100)
     self.total_progress.set_display_text(total_progress_message)
 
@@ -995,6 +1009,54 @@ class VideoProcessor:
           logging.error(f"Error killing process {pid}: {e}")
       self.active_processes.clear()
 
+
+  #############################################################################
+  def confirm_and_kill_process(self, progress_bar):
+    """Confirms and kills a process, then starts the next file."""
+    with self.processes_lock:
+      pid = self.progress_bar_to_pid.get(progress_bar)
+      if not pid:
+        return
+
+      filename = progress_bar.filename_var.get()
+      if messagebox.askyesno("Confirm Kill", f"Are you sure you want to kill the process for {filename}?"):
+        try:
+          p = psutil.Process(pid)
+          p.kill()
+          progress_bar.cancelled.set(True)
+          progress_bar.draw_progress_bar()
+          self.cancelled_files += 1
+          msg = f"Cancelled processing {filename}"
+          logging.info(msg)
+          self.status_update_queue.put(msg)
+
+          # Remove the process from active tracking
+          if pid in self.active_processes:
+            del self.active_processes[pid]
+          if progress_bar in self.progress_bar_to_pid:
+            del self.progress_bar_to_pid[progress_bar]
+
+          # Since a slot is now free, try to start a new task
+          self.start_new_task_if_needed()
+
+        except psutil.NoSuchProcess:
+          logging.warning(f"Process with PID {pid} not found for cancellation.")
+        except Exception as e:
+          logging.error(f"Error killing process {pid}: {e}")
+
+  #############################################################################
+  def start_new_task_if_needed(self):
+    """Checks if a new task can be started and starts one."""
+    if not self.queue.empty() and self.active_threads < self.n_threads.get():
+      # Find a free progress bar
+      for i, pb in enumerate(self.progress_bars):
+        if pb not in self.progress_bar_to_pid:
+          thread = threading.Thread(target=self.worker, args=(i,), name=f"Worker-{i}")
+          thread.daemon = True
+          self.threads.append(thread)
+          thread.start()
+          self.active_threads += 1
+          break
 
   #############################################################################
   def toggle_pause(self, progress_bar):
