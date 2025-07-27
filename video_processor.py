@@ -645,6 +645,7 @@ class VideoProcessor:
           if os.path.exists(dst_file_path) and overwrite_option == "Skip existing files":
             self.skipped_files += 1
             self.file_info[relative_path] = {"duration": 0, "skipped": True}
+            self.total_src_sz -= os.path.getsize(full_path)  # Exclude skipped file size from total
           else:
             # Get audio file metadata and calculate size
             duration, success = self.get_metadata_info(self.ffmpeg_path.get(), full_path)
