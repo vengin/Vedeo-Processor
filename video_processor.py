@@ -148,6 +148,7 @@ class VideoProcessor:
     self.start_time = None
     self.processing_complete = False
     self.processed_files_set = set()
+    self.processed_dst_files_set = set()  # Track actual destination file paths
     self.processing_complete_event = threading.Event()
     self.active_processes = {}  # Change to a dictionary {pid: process_object}
     self.processes_lock = threading.Lock()  # Add lock for thread-safe access
@@ -544,6 +545,9 @@ class VideoProcessor:
       dst_file_path = self.handle_overwrite(dst_file_path, relative_path)
       os.makedirs(os.path.dirname(dst_file_path), exist_ok=True)
 
+
+      # Add the actual destination file path to the set
+      self.processed_dst_files_set.add(dst_file_path)
       # Get pre-calculated file info
       file_data = self.file_info[relative_path]
       dst_time = file_data["duration"]
@@ -601,16 +605,14 @@ class VideoProcessor:
   #############################################################################
   def count_dst_files_sz(self):
     """Calculate the actual size of output files after processing."""
-    dst_dir = self.dst_dir.get()
-    n_files = 0
     self.total_dst_sz = 0
+    n_files = 0
 
-    for root, _, files in os.walk(dst_dir):
-      for file in files:
-        if file.lower().endswith(VID_EXT):
-          full_path = os.path.join(root, file)
-          self.total_dst_sz += os.path.getsize(full_path)
-          n_files += 1
+
+    for dst_file_path in self.processed_dst_files_set:
+      if os.path.exists(dst_file_path):
+        self.total_dst_sz += os.path.getsize(dst_file_path)
+        n_files += 1
 
 
   #############################################################################
@@ -618,9 +620,11 @@ class VideoProcessor:
     """Find, count, queue video files, and pre-calculate output sizes."""
     src_dir = self.src_dir.get()
     self.total_files = 0
+    self.total_src_sz = 0
     self.queue = queue.Queue()
     self.file_info = {}  # Dictionary to store file info
     self.processed_files_set.clear()
+    self.processed_dst_files_set.clear()  # Clear processed destination files
     self.total_dst_seconds = 0
 
     last_update_time = time.time()
@@ -916,10 +920,8 @@ class VideoProcessor:
       msg += f" in {processing_time_str}."
     # Add Compression Ratio
     self.count_dst_files_sz()
-    total_dst_sz_mb = self.total_dst_sz / (1024 * 1024)
-    total_src_sz_mb = self.total_src_sz / (1024 * 1024)
-    if total_dst_sz_mb:
-      msg += f" Compression ratio {(total_src_sz_mb / total_dst_sz_mb):.2f}."
+    if self.total_dst_sz:
+      msg += f" Compression ratio {(self.total_src_sz / self.total_dst_sz):.2f}."
 
     # Display message
     self.update_status("\n" + msg)
@@ -927,9 +929,10 @@ class VideoProcessor:
     self.run_button.config(state=tk.NORMAL)
 
     # 100%
-    total_progress_message = f"100%  {self.processed_files+self.skipped_files+self.cancelled_files}/{self.total_files}"
-    self.total_progress.set_progress(100)
-    self.total_progress.set_display_text(total_progress_message)
+    if hasattr(self, 'total_progress'):
+      total_progress_message = f"100%  {self.processed_files+self.skipped_files+self.cancelled_files}/{self.total_files}"
+      self.total_progress.set_progress(100)
+      self.total_progress.set_display_text(total_progress_message)
 
     # Clear the threads list
     self.threads.clear()
