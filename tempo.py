@@ -142,6 +142,7 @@ class AudioProcessor:
     self.use_compression = False
     self.processing_complete = False
     self.processed_files_set = set()
+    self.processed_dst_files_set = set()  # Track actual destination file paths
     self.processing_complete_event = threading.Event()
     self.active_processes = []  # Add list to track FFMPEG processes
     self.processes_lock = threading.Lock()  # Add lock for thread-safe access
@@ -512,15 +513,23 @@ class AudioProcessor:
     self.processed_files_set.add(relative_path)
     process = None  # Define process outside try block
     try:
-      # if dst_file_path is None:  # Skip file
+
+      # Check if file should be skipped
       if self.file_info[relative_path]["skipped"]:
         progress_bar.set_display_text(relative_path)
         progress_bar.set_progress(100)
-        return  # Do not process, if the file should be skipped
+        return  # Do not process skipped files
 
       dst_file_path = os.path.join(self.dst_dir.get(), relative_path)
       dst_file_path = self.handle_overwrite(dst_file_path, relative_path)
       os.makedirs(os.path.dirname(dst_file_path), exist_ok=True)
+
+      # Ensure the destination path has .mp3 extension (as per generate_ffmpeg_command)
+      base, ext = os.path.splitext(dst_file_path)
+      final_dst_path = base + ".mp3"
+
+      # Add the actual destination file path to the set
+      self.processed_dst_files_set.add(final_dst_path)
 
       # Get pre-calculated file info
       file_data = self.file_info[relative_path]
@@ -571,16 +580,14 @@ class AudioProcessor:
   #############################################################################
   def count_dst_files_sz(self):
     """Calculate the actual size of output files after processing."""
-    dst_dir = self.dst_dir.get()
-    n_files = 0
     self.total_dst_sz = 0
+    n_files = 0
 
-    for root, _, files in os.walk(dst_dir):
-      for file in files:
-        if file.lower().endswith(('.mp3')):
-          full_path = os.path.join(root, file)
-          self.total_dst_sz += os.path.getsize(full_path)
-          n_files += 1
+    # Only count files that were actually processed in this session
+    for dst_file_path in self.processed_dst_files_set:
+      if os.path.exists(dst_file_path):
+        self.total_dst_sz += os.path.getsize(dst_file_path)
+        n_files += 1
 
 
   #############################################################################
@@ -588,9 +595,11 @@ class AudioProcessor:
     """Find, count, queue audio files, and pre-calculate output sizes."""
     src_dir = self.src_dir.get()
     self.total_files = 0
+    self.total_src_sz = 0
     self.queue = queue.Queue()
     self.file_info = {}  # Dictionary to store file info
     self.processed_files_set.clear()
+    self.processed_dst_files_set.clear()  # Clear processed destination files
     self.total_dst_seconds = 0
 
     last_update_time = time.time()
@@ -874,10 +883,8 @@ class AudioProcessor:
       msg += f" in {processing_time_str}."
     # Add Compression Ratio
     self.count_dst_files_sz()
-    total_dst_sz_mb = self.total_dst_sz / (1024 * 1024)
-    total_src_sz_mb = self.total_src_sz / (1024 * 1024)
-    if total_dst_sz_mb:
-      msg += f" Compression ratio {(total_src_sz_mb / total_dst_sz_mb):.2f}."
+    if self.total_dst_sz:
+      msg += f" Compression ratio {(self.total_src_sz / self.total_dst_sz):.2f}."
 
     # Display message
     self.update_status("\n" + msg)
