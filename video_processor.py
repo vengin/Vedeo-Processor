@@ -355,6 +355,11 @@ class VideoProcessor:
     src_file_path = str(src_file_path)
     base, ext = os.path.splitext(str(dst_file_path))
     dst_file_path = base + ext
+    ext_lower = ext.lower()
+
+    # Choose audio codec based on output container
+    # WebM requires Vorbis or Opus audio; use Opus by default
+    audio_codec = "libopus" if ext_lower == ".webm" else "aac"
 
     # Cmd example:
     # ffmpeg.exe -i i.mp4 -filter:v setpts=0.66666667*PTS,scale=640:360 -filter:a atempo=1.5 -vf scale=640:360 -pix_fmt yuv420p -c:v libaom-av1 -b:v 70k -crf 30 -cpu-used 8 -row-mt 1 -g 240 -aq-mode 0 -c:a aac -b:a 80k o.mp4 -y -progress pipe:1 -nostats -hide_banner -loglevel error
@@ -374,7 +379,7 @@ class VideoProcessor:
       "-g", "240",
       "-aq-mode", "0",
       # Audio options
-      "-c:a", "aac",
+      "-c:a", audio_codec,
       "-b:a", "80k",
       # Output options
       dst_file_path,
