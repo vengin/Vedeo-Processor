@@ -307,7 +307,7 @@ class VideoProcessor:
 
     except Exception as e:
       logging.error(f"Error getting Tag info from {src_file_path}: {e}")
-      return None, None, False
+      return None, False
 
     return total_seconds, True
 
