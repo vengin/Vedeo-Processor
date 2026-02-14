@@ -820,6 +820,7 @@ class VideoProcessor:
     self.processed_files = 0
     self.skipped_files = 0
     self.processed_files_set.clear()
+    self.processed_seconds_arr.clear()
 
     # Remove existing progress bars, before creating new ones
     for progress_bar in self.progress_bars:
