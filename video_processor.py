@@ -290,21 +290,42 @@ class VideoProcessor:
 
 
   #############################################################################
+  def check_executables(self):
+    """Verifies that FFMPEG and FFPROBE executables exist."""
+    ffmpeg_path = self.ffmpeg_path.get()
+    if not os.path.exists(ffmpeg_path):
+      return False, f"FFMPEG not found at: {ffmpeg_path}\nPlease check and update the path in the config file."
+
+    ffprobe_path = os.path.join(os.path.dirname(ffmpeg_path), "ffprobe.exe")
+    if not os.path.exists(ffprobe_path):
+      return False, f"FFPROBE not found at: {ffprobe_path}\nIt should be in the same folder as ffmpeg.exe."
+
+    return True, ""
+
+
+  #############################################################################
   def get_metadata_info(self, ffmpeg_path, src_file_path):
     """Gets media file metadata (Duration) using FFPROBE."""
     try:
       # Derive ffprobe_path from ffmpeg_path
       ffprobe_path = os.path.join(os.path.dirname(ffmpeg_path), "ffprobe.exe")
+      if not os.path.exists(ffprobe_path):
+        logging.error(f"FFPROBE not found at: {ffprobe_path}")
+        return None, False
+
       ffprobe_cmd = [
         ffprobe_path, '-v', 'error',
         '-show_entries', 'format=duration',
         '-of', 'json',
         src_file_path
       ]
-      rslt = subprocess.run(ffprobe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+      rslt = subprocess.run(ffprobe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
       info = json.loads(rslt.stdout)
       total_seconds = int(float(info['format']['duration']))  # seconds
 
+    except subprocess.CalledProcessError as e:
+      logging.error(f"FFPROBE error for {src_file_path}: {e.stderr}")
+      return None, False
     except Exception as e:
       logging.error(f"Error getting Tag info from {src_file_path}: {e}")
       return None, False
@@ -661,10 +682,13 @@ class VideoProcessor:
               dst_seconds = int(duration_tempo)
               self.total_dst_seconds += dst_seconds
               logging.debug(f"{relative_path}: dst_seconds={dst_seconds}")
-
             else:
-              logging.error(f"Could not get audio file metadata for {full_path}")
+              msg = f"Could not get audio file metadata for {full_path}"
+              logging.error(msg)
+              self.status_update_queue.put(msg)
               self.error_files += 1
+              # Ensure file_info is populated even on failure to avoid KeyError later
+              self.file_info[relative_path] = {"duration": 0, "skipped": True}
 
           # Update the status_text every second, replacing text (instead of adding new lines)
           current_time = time.time()
@@ -809,6 +833,12 @@ class VideoProcessor:
   def start_processing(self):
     """Starts the audio processing."""
     if not self.validate_tempo():
+      return
+
+    # Verify FFMPEG/FFPROBE paths
+    success, error_msg = self.check_executables()
+    if not success:
+      messagebox.showerror("Executable Not Found", error_msg)
       return
 
     self.status_text.config(state=tk.NORMAL)
